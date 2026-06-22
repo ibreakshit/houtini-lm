@@ -100,11 +100,11 @@ export class CliBackend implements InferenceBackend {
 
   private async runOnce(p: CliProfile, prompt: string, options: ChatOptions): Promise<StreamingResult> {
     const start = this.now();
+    const outFile = tmpFilePath();      // pure, cannot throw — safe before try
     this.pool.acquire(p.id);
-    const adapter = getAdapter(p.provider);
-    const outFile = tmpFilePath();
-    const inv = adapter.buildInvocation(p, prompt, options, outFile);
     try {
+      const adapter = getAdapter(p.provider);
+      const inv = adapter.buildInvocation(p, prompt, options, outFile);
       const result = await this.runProcessFn(inv.argv, {
         env: { ...process.env, ...inv.env } as Record<string, string>,
         stdin: inv.stdin,
@@ -132,7 +132,7 @@ export class CliBackend implements InferenceBackend {
       };
     } finally {
       this.pool.release(p.id);
-      if (inv.outFile) void rm(inv.outFile, { force: true }).catch(() => {});
+      void rm(outFile, { force: true }).catch(() => {});
     }
   }
 }

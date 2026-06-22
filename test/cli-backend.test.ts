@@ -56,3 +56,11 @@ test('listModels returns all profiles as ModelInfo', async () => {
   const m = await be.listModels();
   assert.equal(m.length, 2);
 });
+
+test('pre-run error (unknown provider) releases the pool slot — no leak', async () => {
+  const cfg = { profiles: [{ id: 'bad', provider: 'bogus', bin: 'x', model: 'm', capabilities: ['chat'], concurrency: 1 }] } as any;
+  const be = new CliBackend(cfg, { now: () => 1, runProcessFn: async () => ({ stdout: '{"result":"x"}', stderr: '', exitCode: 0, timedOut: false }) });
+  await assert.rejects(be.chat([{ role: 'user', content: 'q' }], { taskType: 'chat', model: 'bad', overridden: true }));
+  const m = await be.listModels();
+  assert.equal(m.find((x) => x.id === 'bad')?.state, 'loaded'); // slot released, not leaked
+});
