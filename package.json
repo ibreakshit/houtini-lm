@@ -12,7 +12,8 @@
     "build": "tsc && node add-shebang.mjs",
     "dev": "tsc --watch",
     "shakedown": "node shakedown.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:unit": "tsx --test test/*.test.ts"
   },
   "keywords": [
     "mcp",
@@ -51,6 +52,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/sql.js": "^1.4.9",
+    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },
   "engines": {
