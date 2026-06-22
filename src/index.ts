@@ -614,6 +614,8 @@ async function chatCompletionStreaming(
   messages: ChatMessage[],
   options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
 ): Promise<StreamingResult> {
+  // CLI backend manages its own per-profile concurrency; the global single-model lock would needlessly serialize across profiles.
+  if (cliBackend) return chatCompletionStreamingInner(messages, options);
   return withInferenceLock(() => chatCompletionStreamingInner(messages, options));
 }
 

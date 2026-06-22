@@ -105,3 +105,48 @@ test('pre-run error (unknown provider) releases the pool slot — no leak', asyn
   const m = await be.listModels();
   assert.equal(m.find((x) => x.id === 'bad')?.state, 'loaded'); // slot released, not leaked
 });
+
+test('pool runs different profiles concurrently (lock-bypass validation)', async () => {
+  // Two profiles, concurrency=1 each. If the global inference lock were active, the second
+  // call would wait for the first to finish — max-simultaneous would be 1, not 2.
+  // With the lock bypassed for CLI backend, both calls enter runOnce simultaneously.
+  const twoCfg: CliConfig = {
+    profiles: [
+      { id: 'px-a', provider: 'claude', bin: 'claude', model: 'sonnet', capabilities: ['chat'], concurrency: 1 },
+      { id: 'px-b', provider: 'claude', bin: 'claude', model: 'sonnet', capabilities: ['chat'], concurrency: 1 },
+    ],
+    defaults: { cooldownMs: 1000 },
+  };
+
+  let inFlight = 0;
+  let maxSimultaneous = 0;
+
+  // Each call signals arrival; when both have arrived the gate opens automatically.
+  // This avoids timing sensitivity — we don't release until both are provably in-flight.
+  let arrivals = 0;
+  let openGate!: () => void;
+  const gate = new Promise<void>((resolve) => { openGate = resolve; });
+
+  const codexStdout = (text: string) => JSON.stringify({ result: text });
+
+  const be = new CliBackend(twoCfg, {
+    now: () => 1000,
+    runProcessFn: async () => {
+      inFlight++;
+      maxSimultaneous = Math.max(maxSimultaneous, inFlight);
+      arrivals++;
+      if (arrivals === 2) openGate();  // both in-flight: release
+      await gate;
+      inFlight--;
+      return { stdout: codexStdout('ok'), stderr: '', exitCode: 0, timedOut: false };
+    },
+  });
+
+  // Fire two concurrent chat calls and wait for both to complete
+  await Promise.all([
+    be.chat([{ role: 'user', content: 'q1' }], { taskType: 'chat' }),
+    be.chat([{ role: 'user', content: 'q2' }], { taskType: 'chat' }),
+  ]);
+
+  assert.equal(maxSimultaneous, 2, 'both profiles should have run concurrently — max in-flight must be 2');
+});
