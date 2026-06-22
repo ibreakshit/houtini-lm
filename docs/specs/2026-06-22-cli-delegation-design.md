@@ -109,7 +109,7 @@ Active backend chosen by `HOUTINI_LM_BACKEND = openai-compat | cli | auto` (`aut
 
 Implemented inside `CliBackend.listModels()` + a `pool.ts` selector. `routeToModel` precedence is untouched; the pool only changes how a winner is chosen among ties and how unavailability is handled.
 
-1. **Explicit override** (`model`/`profile` param, `HOUTINI_LM_MODEL`, or new `HOUTINI_LM_PROFILE`) → that profile, **used verbatim** — matching the original `routeToModel` (`index.ts:1325`), which short-circuits before any model listing. No availability check, no capability scoring, **no failover**: the call is attempted on exactly that profile and any error (quota/429/auth) surfaces to the caller. The error may still record the profile's cooldown as a side effect (so later *capability-routed* calls skip it), but the overridden call itself is never rerouted.
+1. **Explicit override** (`model` per-call param, or `HOUTINI_LM_PROFILE` env verbatim pin — CLI backend only) → that profile, **used verbatim** — matching the original `routeToModel` (`index.ts:1325`), which short-circuits before any model listing. No availability check, no capability scoring, **no failover**: the call is attempted on exactly that profile and any error (quota/429/auth) surfaces to the caller. Auth/cooldown side effects are still recorded even for overridden calls (so later *capability-routed* calls skip it). `HOUTINI_LM_MODEL` is a soft default — pool-based selection (capability → LRU) still applies; use `HOUTINI_LM_PROFILE` or the per-call `model` param for a verbatim pin.
 2. **Capability scoring** (existing `routeToModel` code) over **available** profiles. A profile is *unavailable* if `enabled === false`, on cooldown, or at its concurrency cap — such profiles are excluded from the candidate set (modelled as not `'loaded'`).
 3. **Tie-break = round-robin / LRU** among the top-scored available profiles: pick the candidate with the oldest `lastUsedAt` (advances a per-`taskType` cursor). This spreads spend across equally-capable accounts.
 4. **Failover**: if the chosen profile errors with a rate/quota signal (429, provider quota message) or times out, mark it on cooldown (`cooldownMs`, with backoff on repeats) and retry selection from step 2 with it excluded. Repeat across the remaining available candidates (bounded by the candidate count — each profile is tried at most once per request). If all are exhausted, return the last error.
@@ -135,13 +135,13 @@ Verified single-response invocations (from each CLI's `--help`):
 
 | Provider | Invocation | Config-home env | Output parse |
 |---|---|---|---|
-| **codex** 0.141 | `codex exec --skip-git-repo-check -s read-only -a never -m <model> -o <tmpfile>` (prompt via stdin) | `CODEX_HOME` | `-o` file = final text; `--json` JSONL → usage |
-| **gemini** 0.47 | `gemini -p <prompt> -m <model> -o json` | global `~/.gemini` (see §4.1) | JSON → text + `usageMetadata` |
-| **claude** 2.1 | `claude -p <prompt> --model <model> --output-format json --no-session-persistence` (+ tool restriction) | `CLAUDE_CONFIG_DIR` | JSON → `result` + `usage` |
+| **codex** 0.141 | `codex exec --skip-git-repo-check -s read-only -m <model> -o <tmpfile>` (prompt via stdin) | `CODEX_HOME` | `-o` file = final text; `--json` JSONL → usage |
+| **gemini** 0.47 | `gemini -p <prompt> -m <model> --approval-mode plan -o json` | global `~/.gemini` (see §4.1) | JSON → text + `usageMetadata` |
+| **claude** 2.1 | `claude -p <prompt> --output-format json --permission-mode plan --disallowed-tools <built-ins>` (+ `CLAUDE_CONFIG_DIR`) | `CLAUDE_CONFIG_DIR` | JSON → `result` + `usage` |
 | **llm** 0.31 | `llm -m <model> --no-stream <prompt>` | (n/a) | stdout text |
 | **custom** | config-driven `argvTemplate` + `promptVia` (stdin/arg) + `parse` (text/json/jsonpath) | per-config | generic |
 
-**Safety (mandatory):** `codex exec` and `claude -p` are agentic. The flags above lock them to pure text generation — codex `-s read-only -a never`; claude restricted/no tools + `--no-session-persistence`; gemini no `--yolo`. houtini passes file *contents* inline in prompts, so the CLI never needs filesystem access. A delegation must not be able to edit files or run commands.
+**Safety (mandatory):** `codex exec` and `claude -p` are agentic. The flags above lock them to pure text generation — codex `-s read-only`; claude `--permission-mode plan --disallowed-tools <built-ins>`; gemini `--approval-mode plan`. houtini passes file *contents* inline in prompts, so the CLI never needs filesystem access. A delegation must not be able to edit files or run commands.
 
 ## 9. Execution mechanics
 
@@ -157,6 +157,7 @@ Verified single-response invocations (from each CLI's `--help`):
 - **Structured output** (`json_schema` → `response_format`): map to each adapter's schema flag (codex `--output-schema`, claude `--json-schema`, gemini JSON mode); for CLIs lacking one, inject schema into the prompt and validate/parse. Per-adapter capability flag.
 - **Reasoning/thinking**: bypass houtini's per-family OpenAI reasoning juggling; let the CLI/model handle it (set effort via CLI flag/config where wanted).
 - **Embeddings**: CLI backend `embed` → optional OpenAI-compat fall-through (`HOUTINI_LM_EMBED_ENDPOINT`) or clear unsupported error.
+- **Env overrides (CLI backend)**: `HOUTINI_LM_PROFILE` pins a single profile by id, used verbatim with no failover (CLI backend only); equivalent to passing `model` in each tool call. `HOUTINI_LM_MODEL` is a soft default that sets the model name passed to the pool but does not bypass capability routing or failover.
 
 ## 11. File plan
 

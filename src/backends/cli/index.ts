@@ -58,7 +58,14 @@ export class CliBackend implements InferenceBackend {
     if (options.overridden && options.model) {
       const p = this.pool.get(options.model);
       if (!p) throw new CliError('error', `Unknown profile override: ${options.model}`);
-      return this.runOnce(p, prompt, options);
+      try {
+        return await this.runOnce(p, prompt, options);
+      } catch (e) {
+        const kind = e instanceof CliError ? e.kind : 'error';
+        if (kind === 'auth') this.handleAuth(p);                 // log + webhook + sticky auth-block
+        else if (kind === 'rate' || kind === 'timeout') this.pool.markCooldown(p.id);
+        throw e;  // verbatim override: surface the error, do NOT fail over
+      }
     }
 
     const candidates = this.pool.listAvailable(taskType);

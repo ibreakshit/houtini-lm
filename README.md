@@ -468,6 +468,7 @@ Set `HOUTINI_LM_BACKEND` to choose the backend:
 | `HOUTINI_LM_BACKEND` | no | `openai-compat` (default) \| `cli` \| `auto` |
 | `HOUTINI_LM_CLI_CONFIG` | when `cli` | Filesystem path to the JSON pool config file (absolute recommended; relative paths are resolved against the server's working directory). |
 | `HOUTINI_LM_ALERT_WEBHOOK` | no | URL to POST `{ profile, provider, kind: "auth", ts }` on auth failures. |
+| `HOUTINI_LM_PROFILE` | no | Pin a single profile by id — used verbatim with **no failover** (CLI backend only). The per-call `model` tool parameter takes precedence over it. `HOUTINI_LM_MODEL` remains a soft default: pool-based capability routing and failover still apply when only `HOUTINI_LM_MODEL` is set. |
 
 Quick-start example:
 
@@ -524,7 +525,7 @@ Each profile's `configHome` isolates that CLI's auth so you can spread calls acr
 
 ### Selection logic
 
-1. **Explicit override** — if the per-call `model` parameter is set, that exact profile runs verbatim with no failover. `HOUTINI_LM_MODEL` sets a process-level model default but does not pin a CLI profile — pool-based selection (capability → LRU) still applies unless the per-call `model` param overrides it.
+1. **Explicit override** — if the per-call `model` parameter is set, that exact profile runs verbatim with no failover. `HOUTINI_LM_PROFILE` pins a profile by id at the process level (CLI backend only) — also verbatim, no failover. `HOUTINI_LM_MODEL` sets a process-level model default but does not pin a CLI profile — pool-based selection (capability → LRU) still applies unless the per-call `model` param or `HOUTINI_LM_PROFILE` overrides it.
 2. **Capability scoring** — among available profiles, those whose `capabilities` include the current task type score higher (boosted further for `codex`-family profiles on code tasks and large-context profiles on analysis tasks).
 3. **Round-robin / LRU tie-break** — equally-scored profiles rotate by least-recently-used.
 4. **Automatic failover** — on rate-limit (429) or timeout the profile enters cooldown and the next candidate is tried. Auth failures immediately block the profile (see below).

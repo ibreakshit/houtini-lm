@@ -60,16 +60,17 @@ test('classifyError detects auth and rate-limit from stderr', () => {
   assert.equal(a.classifyError({ stdout: '', stderr: 'invalid credentials provided', exitCode: 1, timedOut: false }), 'auth');
 });
 
-test('classifyByText broadened auth/rate patterns (codeless phrases)', () => {
+test('classifyByText auth/rate patterns (narrowed: no forbidden/access-denied/permission-denied)', () => {
   const make = (stderr: string, exitCode = 1) => ({ stdout: '', stderr, exitCode, timedOut: false as const });
-  // auth: codeless phrase cases
-  assert.equal(classifyByText(make('Forbidden')), 'auth');
-  assert.equal(classifyByText(make('Access Denied to resource')), 'auth');
+  // auth: unambiguous phrases still → auth
   assert.equal(classifyByText(make('Authentication Failed')), 'auth');
   assert.equal(classifyByText(make('not authenticated')), 'auth');
-  assert.equal(classifyByText(make('Permission Denied')), 'auth');
   assert.equal(classifyByText(make('expired token')), 'auth');
   assert.equal(classifyByText(make('expired credential')), 'auth');
+  // narrowed: these must NOT classify as auth (benign filesystem errors)
+  assert.equal(classifyByText(make('permission denied')), 'error');
+  assert.equal(classifyByText(make('Forbidden')), 'error');
+  assert.equal(classifyByText(make('Access Denied to resource')), 'error');
   // rate: codeless phrase cases
   assert.equal(classifyByText(make('resource exhausted')), 'rate');
   assert.equal(classifyByText(make('usage limit exceeded')), 'rate');

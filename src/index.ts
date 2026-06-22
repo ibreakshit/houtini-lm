@@ -37,7 +37,7 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, basename } from 'node:path';
 import { CliBackend } from './backends/cli/index.js';
 import { loadCliConfig } from './backends/cli/profiles.js';
-import { shouldUseCli } from './backends/cli/activation.js';
+import { shouldUseCli, resolveOverride } from './backends/cli/activation.js';
 
 // Env var naming: HOUTINI_LM_* is the preferred namespace now that we
 // support more than just LM Studio. The legacy LM_STUDIO_* names remain
@@ -45,6 +45,7 @@ import { shouldUseCli } from './backends/cli/activation.js';
 const HOUTINI_LM_BACKEND = (process.env.HOUTINI_LM_BACKEND || '').toLowerCase();
 const HOUTINI_LM_CLI_CONFIG = process.env.HOUTINI_LM_CLI_CONFIG || '';
 const HOUTINI_LM_ALERT_WEBHOOK = process.env.HOUTINI_LM_ALERT_WEBHOOK || '';
+const HOUTINI_LM_PROFILE = process.env.HOUTINI_LM_PROFILE || '';
 let cliBackend: CliBackend | null = null;
 
 async function initBackend(): Promise<void> {
@@ -1316,10 +1317,11 @@ async function routeToModel(taskType: TaskType, override?: string): Promise<Rout
   // Explicit override wins over routing. Honoured regardless of whether we
   // can even list models — useful for remote providers (OpenRouter) where
   // the user knows the model id and doesn't want routing to second-guess.
-  const pinned = override || LM_MODEL;
+  const envProfile = cliBackend ? HOUTINI_LM_PROFILE : '';   // env pin applies to CLI backend only
+  const { pinned, overridden } = resolveOverride(override, envProfile, LM_MODEL);
   if (pinned) {
     const hints = getPromptHints(pinned);
-    return { modelId: pinned, hints, overridden: !!override };
+    return { modelId: pinned, hints, overridden };
   }
 
   let models: ModelInfo[];
