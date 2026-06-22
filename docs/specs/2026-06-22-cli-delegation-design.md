@@ -137,7 +137,7 @@ Verified single-response invocations (from each CLI's `--help`):
 |---|---|---|---|
 | **codex** 0.141 | `codex exec --skip-git-repo-check -s read-only -m <model> -o <tmpfile>` (prompt via stdin) | `CODEX_HOME` | `-o` file = final text; `--json` JSONL → usage |
 | **gemini** 0.47 | `gemini -p <prompt> -m <model> --approval-mode plan -o json` | global `~/.gemini` (see §4.1) | JSON → text + `usageMetadata` |
-| **claude** 2.1 | `claude -p <prompt> --output-format json --permission-mode plan --disallowed-tools <built-ins>` (+ `CLAUDE_CONFIG_DIR`) | `CLAUDE_CONFIG_DIR` | JSON → `result` + `usage` |
+| **claude** 2.1 | `claude -p --model <model> --output-format json --no-session-persistence --permission-mode plan --disallowed-tools <built-ins>` (prompt via stdin) | `CLAUDE_CONFIG_DIR` | JSON → `result` + `usage` |
 | **llm** 0.31 | `llm -m <model> --no-stream <prompt>` | (n/a) | stdout text |
 | **custom** | config-driven `argvTemplate` + `promptVia` (stdin/arg) + `parse` (text/json/jsonpath) | per-config | generic |
 
