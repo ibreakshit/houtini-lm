@@ -19,20 +19,37 @@ export function parseCliConfig(raw: unknown): CliConfig {
   if (!Array.isArray(obj.profiles) || obj.profiles.length === 0) throw new Error('CLI config requires a non-empty "profiles" array');
   const seen = new Set<string>();
   const profiles: CliProfile[] = obj.profiles.map((p, i) => {
-    const r = p as Record<string, unknown>;
     const where = `profiles[${i}]`;
+    if (typeof p !== 'object' || p === null) throw new Error(`${where}: must be an object`);
+    const r = p as Record<string, unknown>;
     if (typeof r.id !== 'string' || !r.id) throw new Error(`${where}: "id" is required`);
     if (seen.has(r.id)) throw new Error(`duplicate profile id: ${r.id}`);
     seen.add(r.id);
     if (!PROVIDERS.includes(r.provider as Provider)) throw new Error(`${where}: unknown provider "${String(r.provider)}"`);
     if (typeof r.bin !== 'string' || !r.bin) throw new Error(`${where}: "bin" is required`);
     if (typeof r.model !== 'string' || !r.model) throw new Error(`${where}: "model" is required`);
-    const caps = Array.isArray(r.capabilities) ? r.capabilities : [];
-    for (const c of caps) if (!TASK_TYPES.includes(c as TaskType)) throw new Error(`${where}: unknown capability "${String(c)}"`);
+    // capabilities: absent → default []; present → must be an array of valid TaskType
+    let caps: TaskType[];
+    if ('capabilities' in r) {
+      if (!Array.isArray(r.capabilities)) throw new Error(`${where}: "capabilities" must be an array`);
+      for (const c of r.capabilities) if (!TASK_TYPES.includes(c as TaskType)) throw new Error(`${where}: unknown capability "${String(c)}"`);
+      caps = r.capabilities as TaskType[];
+    } else {
+      caps = [];
+    }
+    // numeric fields: absent → default; present with wrong type → throw
+    if ('contextWindow' in r && typeof r.contextWindow !== 'number') throw new Error(`${where}: "contextWindow" must be a number`);
+    if ('concurrency' in r && typeof r.concurrency !== 'number') throw new Error(`${where}: "concurrency" must be a number`);
+    if ('weight' in r && typeof r.weight !== 'number') throw new Error(`${where}: "weight" must be a number`);
+    // argvTemplate: if present must be string[]
+    if ('argvTemplate' in r) {
+      if (!Array.isArray(r.argvTemplate) || (r.argvTemplate as unknown[]).some(el => typeof el !== 'string'))
+        throw new Error(`${where}: "argvTemplate" must be an array of strings`);
+    }
     return {
       id: r.id, provider: r.provider as Provider, bin: r.bin, model: r.model,
       configHome: typeof r.configHome === 'string' ? r.configHome : undefined,
-      capabilities: caps as TaskType[],
+      capabilities: caps,
       contextWindow: typeof r.contextWindow === 'number' ? r.contextWindow : undefined,
       concurrency: typeof r.concurrency === 'number' ? r.concurrency : 1,
       weight: typeof r.weight === 'number' ? r.weight : 1,
@@ -43,6 +60,12 @@ export function parseCliConfig(raw: unknown): CliConfig {
       jsonPath: typeof r.jsonPath === 'string' ? r.jsonPath : undefined,
     };
   });
+  // defaults numeric fields: if present with wrong type → throw
+  if (obj.defaults && typeof obj.defaults === 'object') {
+    const d = obj.defaults as Record<string, unknown>;
+    if ('timeoutMs' in d && typeof d.timeoutMs !== 'number') throw new Error('"defaults.timeoutMs" must be a number');
+    if ('cooldownMs' in d && typeof d.cooldownMs !== 'number') throw new Error('"defaults.cooldownMs" must be a number');
+  }
   const defaults = (obj.defaults && typeof obj.defaults === 'object') ? obj.defaults as CliConfig['defaults'] : undefined;
   return { profiles, defaults };
 }

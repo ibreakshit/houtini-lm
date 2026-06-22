@@ -36,3 +36,31 @@ test('profileToModelInfo maps capabilities and availability', () => {
   assert.equal(mi.state, 'not-loaded');
   assert.equal(mi.context_length, 256000);
 });
+
+// --- Validation gap fixes ---
+
+test('rejects null profile entry', () => {
+  assert.throws(
+    () => parseCliConfig({ profiles: [null] }),
+    /must be an object/,
+  );
+});
+
+test('rejects capabilities present but not an array', () => {
+  assert.throws(
+    () => parseCliConfig({ profiles: [{ id: 'a', provider: 'llm', bin: 'llm', model: 'm', capabilities: 'code' }] }),
+    /capabilities/,
+  );
+});
+
+test('rejects contextWindow present with wrong type', () => {
+  assert.throws(
+    () => parseCliConfig({ profiles: [{ id: 'a', provider: 'llm', bin: 'llm', model: 'm', capabilities: [], contextWindow: 'big' }] }),
+    /contextWindow/,
+  );
+});
+
+test('absent capabilities defaults to [] without throwing', () => {
+  const cfg = parseCliConfig({ profiles: [{ id: 'a', provider: 'llm', bin: 'llm', model: 'm' }] });
+  assert.deepEqual(cfg.profiles[0].capabilities, []);
+});
