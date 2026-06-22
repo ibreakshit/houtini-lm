@@ -11,7 +11,7 @@ export interface CliAdapter {
   classifyError(raw: ProcessResult): CliErrorKind;
 }
 
-const AUTH_RE = /\b(401|403|unauthor|not (logged|authenticated)|please (log ?in|authenticate)|invalid api key|missing api key|credential)\b/i;
+const AUTH_RE = /\b(401|403|unauthor|not (logged|authenticated)|please (log ?in|authenticate)|invalid api key|missing api key|credential|api key not valid|invalid credentials)\b/i;
 const RATE_RE = /\b(429|rate.?limit|quota|too many requests|exceeded your)\b/i;
 
 /** Shared default error classifier — adapters can reuse or wrap. */

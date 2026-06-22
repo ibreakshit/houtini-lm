@@ -7,7 +7,7 @@ import type { ProcessResult } from '../exec.js';
 export const codexAdapter: CliAdapter = {
   buildInvocation(p: CliProfile, prompt: string, _o: ChatOptions, outFile: string): Invocation {
     return {
-      argv: [p.bin, 'exec', '--skip-git-repo-check', '-s', 'read-only', '-a', 'never', '-m', p.model, '-o', outFile],
+      argv: [p.bin, 'exec', '--skip-git-repo-check', '-s', 'read-only', '-m', p.model, '-o', outFile],
       env: homeEnv(p),
       stdin: prompt,
       outFile,

@@ -6,7 +6,7 @@ import type { ProcessResult } from '../exec.js';
 
 export const geminiAdapter: CliAdapter = {
   buildInvocation(p: CliProfile, prompt: string, _o: ChatOptions, _f: string): Invocation {
-    return { argv: [p.bin, '-p', prompt, '-m', p.model, '-o', 'json'], env: homeEnv(p) };
+    return { argv: [p.bin, '-p', prompt, '-m', p.model, '--approval-mode', 'plan', '-o', 'json'], env: homeEnv(p) };
   },
   parseOutput(raw: ProcessResult & { outFileContent?: string }): ParsedOutput {
     try {

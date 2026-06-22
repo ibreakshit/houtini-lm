@@ -7,7 +7,7 @@ import type { ProcessResult } from '../exec.js';
 export const claudeAdapter: CliAdapter = {
   buildInvocation(p: CliProfile, prompt: string, _o: ChatOptions, _f: string): Invocation {
     return {
-      argv: [p.bin, '-p', '--model', p.model, '--output-format', 'json', '--no-session-persistence', '--allowed-tools', ''],
+      argv: [p.bin, '-p', '--model', p.model, '--output-format', 'json', '--no-session-persistence', '--permission-mode', 'plan'],
       env: homeEnv(p),
       stdin: prompt,
     };
