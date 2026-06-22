@@ -466,7 +466,7 @@ Set `HOUTINI_LM_BACKEND` to choose the backend:
 | Variable | Required | What it does |
 |----------|----------|-------------|
 | `HOUTINI_LM_BACKEND` | no | `openai-compat` (default) \| `cli` \| `auto` |
-| `HOUTINI_LM_CLI_CONFIG` | when `cli` | Absolute path to the JSON pool config file (see below). |
+| `HOUTINI_LM_CLI_CONFIG` | when `cli` | Filesystem path to the JSON pool config file (absolute recommended; relative paths are resolved against the server's working directory). |
 | `HOUTINI_LM_ALERT_WEBHOOK` | no | URL to POST `{ profile, provider, kind: "auth", ts }` on auth failures. |
 
 Quick-start example:
@@ -499,20 +499,20 @@ The config file is a JSON object with a `profiles` array and an optional `defaul
 | `bin` | string | — | Executable name or absolute path (e.g. `codex`, `/usr/local/bin/claude`). Required. |
 | `model` | string | — | Model identifier passed to the CLI (e.g. `gpt-5.4-codex`, `sonnet`). Required. |
 | `configHome` | string | — | Path to isolate this profile's auth credentials (see multi-subscription below). |
-| `capabilities` | array | `[]` | Task types this profile handles: `code` \| `chat` \| `analysis`. Profiles with no matching capability for a task are reachable only via explicit override. |
+| `capabilities` | array | `[]` | Task types this profile handles: `code` \| `chat` \| `analysis` \| `embedding`. Profiles with no matching capability for a task are reachable only via explicit override. Note: `embedding` is accepted by the validator but CLI profiles cannot serve embeddings — it is not useful for CLI routing. |
 | `contextWindow` | number | — | Reported context window in tokens (informational). |
 | `concurrency` | number | `1` | Max simultaneous in-flight calls on this profile. |
-| `weight` | number | `1` | Tie-break weight in round-robin selection. |
+| `weight` | number | `1` | **Reserved** — parsed and validated but not used in v1 selection. Selection is capability-score then least-recently-used; `weight` has no effect. |
 | `enabled` | boolean | `true` | Set to `false` to exclude a profile without removing it. |
 
 **Custom-provider extras** (provider `custom` only):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `argvTemplate` | string[] | Full argument list passed to the subprocess. |
-| `promptVia` | `stdin` \| `arg` | How the prompt is delivered. |
-| `parse` | `text` \| `json` | Output parsing mode. |
-| `jsonPath` | string | Dot-path into the parsed JSON to extract the response text. |
+| `argvTemplate` | string[] | Full argument list passed to the subprocess. Used in v1. |
+| `promptVia` | `stdin` \| `arg` | How the prompt is delivered. Used in v1. |
+| `parse` | `text` \| `json` | **Reserved** — parsed and validated but not used in v1. The custom adapter returns trimmed stdout unconditionally. |
+| `jsonPath` | string | **Reserved** — parsed and validated but not used in v1. The custom adapter does not extract from JSON. |
 
 ### Multi-subscription spreading
 
@@ -520,11 +520,11 @@ Each profile's `configHome` isolates that CLI's auth so you can spread calls acr
 
 - **codex** — sets `CODEX_HOME` to `configHome`.
 - **claude** — sets `CLAUDE_CONFIG_DIR` to `configHome`.
-- **gemini** — global auth only. Gemini uses its global `~/.gemini` installation and does not isolate per-profile. Multi-account spreading does not apply to Gemini. Gemini must be installed and authenticated globally before use.
+- **gemini** — uses `~/.gemini` by default (recommended, and must be authenticated globally before use). If `configHome` is set it is applied by setting the `HOME` env var for that invocation — this relocates the entire home directory, which is heavier-handed than codex's `CODEX_HOME` or claude's `CLAUDE_CONFIG_DIR`. Multi-account spreading is cleanest on codex or claude.
 
 ### Selection logic
 
-1. **Explicit override** — if the `model` parameter or `HOUTINI_LM_MODEL`/`HOUTINI_LM_PROFILE` env var is set, that exact profile runs with no failover.
+1. **Explicit override** — if the per-call `model` parameter is set, that exact profile runs verbatim with no failover. `HOUTINI_LM_MODEL` sets a process-level model default but does not pin a CLI profile — pool-based selection (capability → LRU) still applies unless the per-call `model` param overrides it.
 2. **Capability scoring** — among available profiles, those whose `capabilities` include the current task type score higher (boosted further for `codex`-family profiles on code tasks and large-context profiles on analysis tasks).
 3. **Round-robin / LRU tie-break** — equally-scored profiles rotate by least-recently-used.
 4. **Automatic failover** — on rate-limit (429) or timeout the profile enters cooldown and the next candidate is tried. Auth failures immediately block the profile (see below).
