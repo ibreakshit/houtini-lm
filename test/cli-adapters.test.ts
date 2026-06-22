@@ -8,20 +8,33 @@ const codexP: CliProfile = { id: 'cx', provider: 'codex', bin: 'codex', model: '
 const claudeP: CliProfile = { id: 'cl', provider: 'claude', bin: 'claude', model: 'sonnet', capabilities: ['chat'], configHome: '/tmp/cl' };
 const gemP: CliProfile = { id: 'gm', provider: 'gemini', bin: 'gemini', model: 'gemini-2.5-pro', capabilities: ['analysis'] };
 
-test('codex builds a read-only non-interactive exec invocation with CODEX_HOME and outFile', () => {
+test('codex builds a read-only non-interactive exec invocation with --json and CODEX_HOME', () => {
   const inv = getAdapter('codex').buildInvocation(codexP, 'hi', {}, '/tmp/out.txt');
-  assert.deepEqual(inv.argv.slice(0, 2), ['codex', 'exec']);
+  assert.ok(inv.argv.includes('exec'));
   assert.ok(inv.argv.includes('--skip-git-repo-check'));
   assert.ok(inv.argv.includes('read-only'));   // -s read-only
+  assert.ok(inv.argv.includes('--json'));
+  assert.ok(inv.argv.includes('-m'));
+  assert.ok(inv.argv.includes(codexP.model));
   assert.ok(!inv.argv.includes('-a'));         // no approval flag (codex exec has no -a)
+  assert.ok(!inv.argv.includes('-o'));         // no outFile flag
+  assert.equal(inv.outFile, undefined);
   assert.equal(inv.env.CODEX_HOME, '/tmp/cx');
-  assert.equal(inv.outFile, '/tmp/out.txt');
   assert.equal(inv.stdin, 'hi');
 });
 
-test('codex parseOutput prefers outFileContent', () => {
-  const out = getAdapter('codex').parseOutput({ stdout: 'noise', stderr: '', exitCode: 0, timedOut: false, outFileContent: 'final answer' });
-  assert.equal(out.content, 'final answer');
+test('codex parseOutput parses JSONL --json output for content and usage', () => {
+  const stdout = [
+    '{"type":"thread.started","thread_id":"t1"}',
+    '{"type":"turn.started"}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"391"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":12739,"cached_input_tokens":2432,"output_tokens":5,"reasoning_output_tokens":0}}',
+  ].join('\n');
+  const out = getAdapter('codex').parseOutput({ stdout, stderr: '', exitCode: 0, timedOut: false });
+  assert.equal(out.content, '391');
+  assert.equal(out.usage.prompt_tokens, 12739);
+  assert.equal(out.usage.completion_tokens, 5);
+  assert.equal(out.usage.total_tokens, 12744);
 });
 
 test('claude builds -p json invocation with CLAUDE_CONFIG_DIR, plan lockdown, and parses result', () => {
