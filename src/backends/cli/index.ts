@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InferenceBackend, ChatMessage, ChatOptions, StreamingResult, ModelInfo } from '../../types.js';
@@ -19,8 +19,6 @@ function renderPrompt(messages: ChatMessage[]): string {
   return messages.map((m) => (m.role === 'system' ? `# System\n${m.content}` : m.content)).join('\n\n');
 }
 
-let tmpSeq = 0;
-function tmpFilePath(): string { return join(tmpdir(), `houtini-cli-${process.pid}-${tmpSeq++}.txt`); }
 
 export class CliBackend implements InferenceBackend {
   name = 'cli';
@@ -107,12 +105,15 @@ export class CliBackend implements InferenceBackend {
 
   private async runOnce(p: CliProfile, prompt: string, options: ChatOptions): Promise<StreamingResult> {
     const start = this.now();
-    const outFile = tmpFilePath();      // pure, cannot throw — safe before try
+    // Acquire before any await so concurrent callers see correct inFlight when they call listAvailable.
     this.pool.acquire(p.id);
+    let tmpDir: string | undefined;
     try {
+      tmpDir = await mkdtemp(join(tmpdir(), 'houtini-cli-'));   // 0700, owner-only — blocks symlink pre-creation
+      const tmpPath = join(tmpDir, 'io');
       const adapter = getAdapter(p.provider);
-      const inv = adapter.buildInvocation(p, prompt, options, outFile);
-      if (inv.schemaFile) { await writeFile(inv.schemaFile.path, inv.schemaFile.content, 'utf8'); }
+      const inv = adapter.buildInvocation(p, prompt, options, tmpPath);
+      if (inv.schemaFile) { await writeFile(inv.schemaFile.path, inv.schemaFile.content, { mode: 0o600 }); }
       const result = await this.runProcessFn(inv.argv, {
         env: { ...process.env, ...inv.env } as Record<string, string>,
         stdin: inv.stdin,
@@ -140,7 +141,7 @@ export class CliBackend implements InferenceBackend {
       };
     } finally {
       this.pool.release(p.id);
-      void rm(outFile, { force: true }).catch(() => {});
+      if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }

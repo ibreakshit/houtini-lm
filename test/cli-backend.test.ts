@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { CliBackend } from '../src/backends/cli/index.js';
 import type { CliConfig } from '../src/backends/cli/profiles.js';
 import type { ProcessResult } from '../src/backends/cli/exec.js';
@@ -68,14 +68,17 @@ test('runOnce writes schema file before spawn when responseFormat.json_schema is
     '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3,"reasoning_output_tokens":0}}',
   ].join('\n');
 
+  let capturedSchemaPath: string | undefined;
   let capturedSchemaContent: Record<string, unknown> | undefined;
+  let schemaExistsAtCallTime = false;
   const be = new CliBackend(codexCfg, {
     now: () => 1000,
     runProcessFn: async (argv) => {
       const idx = argv.indexOf('--output-schema');
       if (idx !== -1) {
-        const schemaPath = argv[idx + 1];
-        capturedSchemaContent = JSON.parse(readFileSync(schemaPath, 'utf8')) as Record<string, unknown>;
+        capturedSchemaPath = argv[idx + 1];
+        schemaExistsAtCallTime = existsSync(capturedSchemaPath);
+        capturedSchemaContent = JSON.parse(readFileSync(capturedSchemaPath, 'utf8')) as Record<string, unknown>;
       }
       return { stdout: codexStdout, stderr: '', exitCode: 0, timedOut: false };
     },
@@ -88,6 +91,11 @@ test('runOnce writes schema file before spawn when responseFormat.json_schema is
   assert.equal(r.content, '{"answer":391}');
   assert.ok(capturedSchemaContent !== undefined, 'schema file should have been written before spawn');
   assert.deepEqual(capturedSchemaContent, schema);
+  assert.ok(schemaExistsAtCallTime, 'schema file must exist at the moment the process is spawned');
+  // Verify the temp dir (parent of schema path) was cleaned up by the finally block
+  assert.ok(capturedSchemaPath !== undefined, 'schema path must have been captured');
+  const { dirname } = await import('node:path');
+  assert.ok(!existsSync(dirname(capturedSchemaPath!)), 'temp dir must be cleaned up after chat() resolves');
 });
 
 test('pre-run error (unknown provider) releases the pool slot — no leak', async () => {
