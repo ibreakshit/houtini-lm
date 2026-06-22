@@ -22,7 +22,8 @@ export function runProcess(argv: string[], opts: RunOptions = {}): Promise<Proce
     child.stderr?.on('data', (d) => { stderr += d.toString(); });
     child.on('error', (e) => { stderr += String(e); finish(null); });
     child.on('close', (code) => finish(code));
+    child.stdin?.on('error', () => { /* ignore EPIPE / ERR_STREAM_DESTROYED — child closed stdin early */ });
     if (opts.stdin !== undefined) { child.stdin?.write(opts.stdin); child.stdin?.end(); }
-    else child.stdin?.end();
+    else { child.stdin?.end(); }
   });
 }

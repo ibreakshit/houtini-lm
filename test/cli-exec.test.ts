@@ -21,3 +21,9 @@ test('times out and reports timedOut', async () => {
   const r = await runProcess([process.execPath, '-e', 'setTimeout(()=>{},10000)'], { timeoutMs: 200 });
   assert.equal(r.timedOut, true);
 });
+
+test('does not crash when child exits before consuming stdin', async () => {
+  const r = await runProcess([process.execPath, '-e', 'process.exit(0)'], { stdin: 'x'.repeat(1_000_000) });
+  assert.ok(r); // resolved, no unhandled EPIPE
+  assert.equal(r.timedOut, false);
+});
