@@ -1,9 +1,9 @@
 {
-  "name": "@houtini/lm",
+  "name": "@ibreakshit/houtini-lm",
   "version": "2.13.2",
   "type": "module",
   "description": "MCP server for local LLMs — connects to LM Studio or any OpenAI-compatible endpoint",
-  "mcpName": "io.github.houtini-ai/lm",
+  "mcpName": "io.github.ibreakshit/houtini-lm",
   "main": "dist/index.js",
   "bin": {
     "houtini-lm": "dist/index.js"
