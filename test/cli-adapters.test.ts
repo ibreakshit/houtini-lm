@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getAdapter } from '../src/backends/cli/adapters/index.js';
+import { classifyByText } from '../src/backends/cli/adapters/types.js';
 import type { CliProfile } from '../src/backends/cli/profiles.js';
 
 const codexP: CliProfile = { id: 'cx', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code'], configHome: '/tmp/cx' };
@@ -29,6 +30,11 @@ test('claude builds -p json invocation with CLAUDE_CONFIG_DIR, plan lockdown, an
   assert.ok(inv.argv.includes('-p'));
   assert.ok(inv.argv.includes('--output-format') && inv.argv.includes('json'));
   assert.ok(inv.argv.includes('--permission-mode') && inv.argv.includes('plan'));  // read-only plan mode
+  assert.ok(inv.argv.includes('--disallowed-tools'));  // no tools at all
+  // verify the core built-in tools are explicitly disallowed
+  for (const t of ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'NotebookEdit', 'Task']) {
+    assert.ok(inv.argv.includes(t), `expected ${t} in --disallowed-tools list`);
+  }
   assert.equal(inv.env.CLAUDE_CONFIG_DIR, '/tmp/cl');
   const out = a.parseOutput({ stdout: JSON.stringify({ result: 'A', usage: { input_tokens: 3, output_tokens: 5 } }), stderr: '', exitCode: 0, timedOut: false });
   assert.equal(out.content, 'A');
@@ -52,4 +58,24 @@ test('classifyError detects auth and rate-limit from stderr', () => {
   assert.equal(a.classifyError({ stdout: 'ok', stderr: '', exitCode: 0, timedOut: false }), 'ok');
   assert.equal(a.classifyError({ stdout: '', stderr: 'api key not valid', exitCode: 1, timedOut: false }), 'auth');
   assert.equal(a.classifyError({ stdout: '', stderr: 'invalid credentials provided', exitCode: 1, timedOut: false }), 'auth');
+});
+
+test('classifyByText broadened auth/rate patterns (codeless phrases)', () => {
+  const make = (stderr: string, exitCode = 1) => ({ stdout: '', stderr, exitCode, timedOut: false as const });
+  // auth: codeless phrase cases
+  assert.equal(classifyByText(make('Forbidden')), 'auth');
+  assert.equal(classifyByText(make('Access Denied to resource')), 'auth');
+  assert.equal(classifyByText(make('Authentication Failed')), 'auth');
+  assert.equal(classifyByText(make('not authenticated')), 'auth');
+  assert.equal(classifyByText(make('Permission Denied')), 'auth');
+  assert.equal(classifyByText(make('expired token')), 'auth');
+  assert.equal(classifyByText(make('expired credential')), 'auth');
+  // rate: codeless phrase cases
+  assert.equal(classifyByText(make('resource exhausted')), 'rate');
+  assert.equal(classifyByText(make('usage limit exceeded')), 'rate');
+  assert.equal(classifyByText(make('too many requests sent')), 'rate');
+  // baseline: clean exit => ok
+  assert.equal(classifyByText({ stdout: 'ok', stderr: '', exitCode: 0, timedOut: false }), 'ok');
+  // baseline: unrecognised error => error
+  assert.equal(classifyByText(make('some other failure')), 'error');
 });
