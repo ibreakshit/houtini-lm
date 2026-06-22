@@ -447,6 +447,109 @@ On **remote** providers (OpenRouter, DeepSeek, Groq, Cerebras, and anything dete
 | `HOUTINI_LM_PROVIDER` | *(auto-detect)* | Force provider-specific handling. Set to `openrouter` for OpenRouter attribution headers, `reasoning.exclude`, and no inference serialisation. Otherwise auto-detected from the endpoint URL. |
 | `HOUTINI_LM_CONTEXT_WINDOW` | `100000` | Fallback context window if the API doesn't report it. Legacy alias: `LM_CONTEXT_WINDOW`. |
 
+## CLI delegation backend
+
+The CLI backend delegates inference to locally-installed AI CLIs (Codex, Gemini, Claude) instead of an OpenAI-compatible HTTP server. Each CLI runs in agentic-lockdown mode — read-only, single-response — so it cannot edit files or run mutating commands. Prompts are passed inline; the CLIs return one response and exit.
+
+### Activation
+
+Set `HOUTINI_LM_BACKEND` to choose the backend:
+
+| Value | Behaviour |
+|-------|-----------|
+| *(unset)* or `openai-compat` | OpenAI-compatible path (default, existing behaviour). A CLI config file is ignored even if present. |
+| `cli` | CLI backend. Requires `HOUTINI_LM_CLI_CONFIG` — the server exits with a fatal error if it is missing. |
+| `auto` | CLI backend if `HOUTINI_LM_CLI_CONFIG` is set; otherwise OpenAI-compatible path. |
+
+### Environment variables
+
+| Variable | Required | What it does |
+|----------|----------|-------------|
+| `HOUTINI_LM_BACKEND` | no | `openai-compat` (default) \| `cli` \| `auto` |
+| `HOUTINI_LM_CLI_CONFIG` | when `cli` | Absolute path to the JSON pool config file (see below). |
+| `HOUTINI_LM_ALERT_WEBHOOK` | no | URL to POST `{ profile, provider, kind: "auth", ts }` on auth failures. |
+
+Quick-start example:
+
+```bash
+claude mcp add houtini-lm \
+  -e HOUTINI_LM_BACKEND=cli \
+  -e HOUTINI_LM_CLI_CONFIG=/home/you/.houtini/cli-config.json \
+  -- npx -y @houtini/lm
+```
+
+### Pool config (`HOUTINI_LM_CLI_CONFIG`)
+
+The config file is a JSON object with a `profiles` array and an optional `defaults` block. A working 3-profile example (codex + gemini + claude) lives at [`docs/examples/cli-config.example.json`](docs/examples/cli-config.example.json).
+
+**Top-level fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `profiles` | array | One entry per CLI subscription. Required, non-empty. |
+| `defaults.timeoutMs` | number | Per-call subprocess timeout in ms (default 180000). |
+| `defaults.cooldownMs` | number | How long a rate-limited profile sits out before re-entering the pool (default 60000). |
+
+**Profile fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | — | Unique identifier used for overrides and logs. Required. |
+| `provider` | string | — | `codex` \| `gemini` \| `claude` \| `llm` \| `custom`. Required. |
+| `bin` | string | — | Executable name or absolute path (e.g. `codex`, `/usr/local/bin/claude`). Required. |
+| `model` | string | — | Model identifier passed to the CLI (e.g. `gpt-5.4-codex`, `sonnet`). Required. |
+| `configHome` | string | — | Path to isolate this profile's auth credentials (see multi-subscription below). |
+| `capabilities` | array | `[]` | Task types this profile handles: `code` \| `chat` \| `analysis`. Profiles with no matching capability for a task are reachable only via explicit override. |
+| `contextWindow` | number | — | Reported context window in tokens (informational). |
+| `concurrency` | number | `1` | Max simultaneous in-flight calls on this profile. |
+| `weight` | number | `1` | Tie-break weight in round-robin selection. |
+| `enabled` | boolean | `true` | Set to `false` to exclude a profile without removing it. |
+
+**Custom-provider extras** (provider `custom` only):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `argvTemplate` | string[] | Full argument list passed to the subprocess. |
+| `promptVia` | `stdin` \| `arg` | How the prompt is delivered. |
+| `parse` | `text` \| `json` | Output parsing mode. |
+| `jsonPath` | string | Dot-path into the parsed JSON to extract the response text. |
+
+### Multi-subscription spreading
+
+Each profile's `configHome` isolates that CLI's auth so you can spread calls across multiple subscriptions:
+
+- **codex** — sets `CODEX_HOME` to `configHome`.
+- **claude** — sets `CLAUDE_CONFIG_DIR` to `configHome`.
+- **gemini** — global auth only. Gemini uses its global `~/.gemini` installation and does not isolate per-profile. Multi-account spreading does not apply to Gemini. Gemini must be installed and authenticated globally before use.
+
+### Selection logic
+
+1. **Explicit override** — if the `model` parameter or `HOUTINI_LM_MODEL`/`HOUTINI_LM_PROFILE` env var is set, that exact profile runs with no failover.
+2. **Capability scoring** — among available profiles, those whose `capabilities` include the current task type score higher (boosted further for `codex`-family profiles on code tasks and large-context profiles on analysis tasks).
+3. **Round-robin / LRU tie-break** — equally-scored profiles rotate by least-recently-used.
+4. **Automatic failover** — on rate-limit (429) or timeout the profile enters cooldown and the next candidate is tried. Auth failures immediately block the profile (see below).
+
+### Agentic lockdown
+
+All CLIs are invoked in read-only, single-response mode so they cannot edit files or run mutating commands:
+
+| Provider | Flag |
+|----------|------|
+| codex | `exec -s read-only` |
+| gemini | `--approval-mode plan` |
+| claude | `--permission-mode plan` |
+
+Prompts pass all content inline. The CLIs return one response and exit.
+
+### Auth failures
+
+When a CLI exits with an auth error (401/403 or matching error text):
+
+1. Logged to stderr as `[houtini-lm][AUTH] profile "<id>" (<provider>) auth-blocked`.
+2. Surfaced in the tool response so the caller sees it.
+3. The profile is marked auth-blocked — this is **sticky**. The profile does not auto-recover; fix the credentials and restart the server.
+4. If `HOUTINI_LM_ALERT_WEBHOOK` is set, a POST is sent immediately: `{ profile, provider, kind: "auth", ts }`.
+
 ## Compatible endpoints
 
 Works with anything that speaks the OpenAI `/v1/chat/completions` API:

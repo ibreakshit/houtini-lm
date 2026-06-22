@@ -1,0 +1,40 @@
+{
+  "profiles": [
+    {
+      "id": "codex-main",
+      "provider": "codex",
+      "bin": "codex",
+      "model": "gpt-5.4-codex",
+      "configHome": "~/.houtini/profiles/codex-main",
+      "capabilities": ["code", "analysis"],
+      "contextWindow": 256000,
+      "concurrency": 2,
+      "weight": 2
+    },
+    {
+      "id": "gemini",
+      "provider": "gemini",
+      "bin": "gemini",
+      "model": "gemini-2.5-pro",
+      "capabilities": ["analysis", "chat"],
+      "contextWindow": 1000000,
+      "concurrency": 1,
+      "weight": 1
+    },
+    {
+      "id": "claude-sub",
+      "provider": "claude",
+      "bin": "claude",
+      "model": "sonnet",
+      "configHome": "~/.houtini/profiles/claude-sub",
+      "capabilities": ["chat", "code", "analysis"],
+      "contextWindow": 200000,
+      "concurrency": 1,
+      "weight": 1
+    }
+  ],
+  "defaults": {
+    "timeoutMs": 180000,
+    "cooldownMs": 60000
+  }
+}
