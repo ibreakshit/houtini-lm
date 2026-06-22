@@ -20,6 +20,23 @@ test('codex builds a read-only non-interactive exec invocation with --json and C
   assert.equal(inv.outFile, undefined);
   assert.equal(inv.env.CODEX_HOME, '/tmp/cx');
   assert.equal(inv.stdin, 'hi');
+  // no schema — schemaFile must be absent
+  assert.equal(inv.schemaFile, undefined);
+  assert.ok(!inv.argv.includes('--output-schema'));
+});
+
+test('codex buildInvocation with json_schema adds --output-schema and schemaFile', () => {
+  const schema = { type: 'object', additionalProperties: false, properties: { answer: { type: 'number' } }, required: ['answer'] };
+  const inv = getAdapter('codex').buildInvocation(
+    codexP, 'hi',
+    { responseFormat: { type: 'json_schema', json_schema: { name: 'r', schema } } },
+    '/tmp/x.json',
+  );
+  assert.ok(inv.argv.includes('--json'));
+  assert.ok(inv.argv.includes('--output-schema'));
+  assert.ok(inv.argv.includes('/tmp/x.json'));
+  assert.ok(inv.schemaFile !== undefined);
+  assert.deepEqual(JSON.parse(inv.schemaFile!.content), schema);
 });
 
 test('codex parseOutput parses JSONL --json output for content and usage', () => {

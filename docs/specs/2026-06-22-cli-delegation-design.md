@@ -149,7 +149,7 @@ Verified single-response invocations (from each CLI's `--help`):
 ## 10. Cross-cutting behaviour (kept working)
 
 - **Token footer / stats**: adapters populate `StreamingResult.usage` from each CLI's JSON; where absent, estimate from char count. The sql.js lifetime-totals DB and `stats` tool are untouched.
-- **Structured output** (`json_schema` → `response_format`): map to each adapter's schema flag (codex `--output-schema`, claude `--json-schema`); for CLIs lacking one, inject schema into the prompt and validate/parse. Per-adapter capability flag.
+- **Structured output** (`json_schema` → `response_format`): codex **enforces** it via `--output-schema <tmpfile>` (coexists with `--json`; implemented). Other CLI providers (claude, llm, custom) remain best-effort/prompt-only — schema is injected into the prompt but output is not mechanically validated.
 - **Reasoning/thinking**: bypass houtini's per-family OpenAI reasoning juggling; let the CLI/model handle it (set effort via CLI flag/config where wanted).
 - **Embeddings**: CLI backend `embed` → optional OpenAI-compat fall-through (`HOUTINI_LM_EMBED_ENDPOINT`) or clear unsupported error.
 - **Env overrides (CLI backend)**: `HOUTINI_LM_PROFILE` pins a single profile by id, used verbatim with no failover (CLI backend only); equivalent to passing `model` in each tool call. `HOUTINI_LM_MODEL` is a soft default that sets the model name passed to the pool but does not bypass capability routing or failover.

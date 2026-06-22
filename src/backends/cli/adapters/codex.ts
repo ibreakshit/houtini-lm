@@ -5,12 +5,16 @@ import type { ChatOptions } from '../../../types.js';
 import type { ProcessResult } from '../exec.js';
 
 export const codexAdapter: CliAdapter = {
-  buildInvocation(p: CliProfile, prompt: string, _o: ChatOptions, _outFile: string): Invocation {
-    return {
-      argv: [p.bin, 'exec', '--skip-git-repo-check', '-s', 'read-only', '--json', '-m', p.model],
-      env: homeEnv(p),
-      stdin: prompt,
-    };
+  buildInvocation(p: CliProfile, prompt: string, options: ChatOptions, outFile: string): Invocation {
+    const argv = [p.bin, 'exec', '--skip-git-repo-check', '-s', 'read-only', '--json', '-m', p.model];
+    const inv: Invocation = { argv, env: homeEnv(p), stdin: prompt };
+    const schema = options.responseFormat?.json_schema?.schema;
+    if (schema) {
+      // codex --output-schema takes a raw JSON Schema file; coexists with --json (verified)
+      argv.push('--output-schema', outFile);
+      inv.schemaFile = { path: outFile, content: JSON.stringify(schema, null, 2) };
+    }
+    return inv;
   },
   parseOutput(raw: ProcessResult & { outFileContent?: string }): ParsedOutput {
     const lines = raw.stdout.split('\n');

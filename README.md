@@ -542,6 +542,10 @@ All CLIs are invoked in read-only, single-response mode so they cannot edit file
 
 Prompts pass all content inline. The CLIs return one response and exit.
 
+### Structured output
+
+When `json_schema` is passed on the CLI path, **codex enforces** it via `--output-schema <file>` (the flag is verified to coexist with `--json`). Other CLI providers (claude, llm, custom) receive the schema injected into the prompt and are best-effort — the model is asked to conform but output is not mechanically validated.
+
 ### Auth failures
 
 When a CLI exits with an auth error (401/403 or matching error text):

@@ -3,7 +3,7 @@ import type { ChatOptions, StreamingResult } from '../../../types.js';
 import type { ProcessResult } from '../exec.js';
 
 export type CliErrorKind = 'ok' | 'auth' | 'rate' | 'error';
-export interface Invocation { argv: string[]; env: Record<string, string>; stdin?: string; outFile?: string; }
+export interface Invocation { argv: string[]; env: Record<string, string>; stdin?: string; outFile?: string; schemaFile?: { path: string; content: string }; }
 export interface ParsedOutput { content: string; usage?: StreamingResult['usage']; }
 export interface CliAdapter {
   buildInvocation(p: CliProfile, prompt: string, options: ChatOptions, outFile: string): Invocation;

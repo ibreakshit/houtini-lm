@@ -1,4 +1,4 @@
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InferenceBackend, ChatMessage, ChatOptions, StreamingResult, ModelInfo } from '../../types.js';
@@ -112,6 +112,7 @@ export class CliBackend implements InferenceBackend {
     try {
       const adapter = getAdapter(p.provider);
       const inv = adapter.buildInvocation(p, prompt, options, outFile);
+      if (inv.schemaFile) { await writeFile(inv.schemaFile.path, inv.schemaFile.content, 'utf8'); }
       const result = await this.runProcessFn(inv.argv, {
         env: { ...process.env, ...inv.env } as Record<string, string>,
         stdin: inv.stdin,

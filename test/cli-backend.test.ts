@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { CliBackend } from '../src/backends/cli/index.js';
 import type { CliConfig } from '../src/backends/cli/profiles.js';
 import type { ProcessResult } from '../src/backends/cli/exec.js';
@@ -55,6 +56,38 @@ test('listModels returns all profiles as ModelInfo', async () => {
   const be = new CliBackend(cfg, { now: () => 1000 });
   const m = await be.listModels();
   assert.equal(m.length, 2);
+});
+
+test('runOnce writes schema file before spawn when responseFormat.json_schema is set', async () => {
+  const schema = { type: 'object', additionalProperties: false, properties: { answer: { type: 'number' } }, required: ['answer'] };
+  const codexCfg: CliConfig = { profiles: [
+    { id: 'cx-a', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code', 'chat'], concurrency: 1 },
+  ] };
+  const codexStdout = [
+    '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"answer\\":391}"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3,"reasoning_output_tokens":0}}',
+  ].join('\n');
+
+  let capturedSchemaContent: Record<string, unknown> | undefined;
+  const be = new CliBackend(codexCfg, {
+    now: () => 1000,
+    runProcessFn: async (argv) => {
+      const idx = argv.indexOf('--output-schema');
+      if (idx !== -1) {
+        const schemaPath = argv[idx + 1];
+        capturedSchemaContent = JSON.parse(readFileSync(schemaPath, 'utf8')) as Record<string, unknown>;
+      }
+      return { stdout: codexStdout, stderr: '', exitCode: 0, timedOut: false };
+    },
+  });
+
+  const r = await be.chat(
+    [{ role: 'user', content: 'q' }],
+    { taskType: 'chat', responseFormat: { type: 'json_schema', json_schema: { name: 'r', schema } } },
+  );
+  assert.equal(r.content, '{"answer":391}');
+  assert.ok(capturedSchemaContent !== undefined, 'schema file should have been written before spawn');
+  assert.deepEqual(capturedSchemaContent, schema);
 });
 
 test('pre-run error (unknown provider) releases the pool slot — no leak', async () => {
