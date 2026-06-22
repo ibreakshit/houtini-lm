@@ -35,10 +35,26 @@ import type {
 } from './types.js';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, basename } from 'node:path';
+import { CliBackend } from './backends/cli/index.js';
+import { loadCliConfig } from './backends/cli/profiles.js';
 
 // Env var naming: HOUTINI_LM_* is the preferred namespace now that we
 // support more than just LM Studio. The legacy LM_STUDIO_* names remain
 // accepted indefinitely so existing users don't need to change anything.
+const HOUTINI_LM_BACKEND = (process.env.HOUTINI_LM_BACKEND || '').toLowerCase();
+const HOUTINI_LM_CLI_CONFIG = process.env.HOUTINI_LM_CLI_CONFIG || '';
+const HOUTINI_LM_ALERT_WEBHOOK = process.env.HOUTINI_LM_ALERT_WEBHOOK || '';
+let cliBackend: CliBackend | null = null;
+
+async function initBackend(): Promise<void> {
+  const useCli = HOUTINI_LM_BACKEND === 'cli' || (HOUTINI_LM_BACKEND === '' && HOUTINI_LM_CLI_CONFIG !== '' && process.env.HOUTINI_LM_BACKEND !== 'openai-compat');
+  if (useCli && HOUTINI_LM_CLI_CONFIG) {
+    const cfg = await loadCliConfig(HOUTINI_LM_CLI_CONFIG);
+    cliBackend = new CliBackend(cfg, { alertWebhook: HOUTINI_LM_ALERT_WEBHOOK || undefined });
+    process.stderr.write(`[houtini-lm] CLI backend active: ${cfg.profiles.length} profile(s)\n`);
+  }
+}
+
 const LM_BASE_URL =
   process.env.HOUTINI_LM_ENDPOINT_URL ||
   process.env.LM_STUDIO_URL ||
@@ -593,7 +609,7 @@ async function timedRead(
  */
 async function chatCompletionStreaming(
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number } = {},
+  options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
 ): Promise<StreamingResult> {
   return withInferenceLock(() => chatCompletionStreamingInner(messages, options));
 }
@@ -608,8 +624,36 @@ async function getActiveModel(): Promise<ModelInfo | null> {
 
 async function chatCompletionStreamingInner(
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number } = {},
+  options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
 ): Promise<StreamingResult> {
+  // CLI backend branch — early-return with heartbeat to keep the MCP client alive
+  if (cliBackend) {
+    let hbSeq = 0;
+    const sendCliProgress = (msg: string) => {
+      if (options.progressToken === undefined) return;
+      hbSeq++;
+      server.notification({
+        method: 'notifications/progress',
+        params: { progressToken: options.progressToken, progress: hbSeq, message: msg },
+      }).catch(() => { /* best-effort */ });
+    };
+    sendCliProgress('CLI backend: running...');
+    const hb = setInterval(() => sendCliProgress('CLI backend: waiting for response...'), PREFILL_KEEPALIVE_MS);
+    try {
+      return await cliBackend.chat(messages, {
+        temperature: options.temperature,
+        maxTokens: options.maxTokens,
+        model: options.model,
+        responseFormat: options.responseFormat,
+        progressToken: options.progressToken,
+        taskType: options.taskType,
+        overridden: options.overridden,
+      });
+    } finally {
+      clearInterval(hb);
+    }
+  }
+
   // Resolve active model once — we use it for both context-aware max_tokens
   // and for auto-injecting the model field when the caller didn't specify one.
   // Ollama returns HTTP 400 ("model is required") if the field is absent;
@@ -1037,6 +1081,8 @@ function getProviderProfile(): ProviderProfile {
  *   3. OpenAI-compatible /v1/models — generic fallback (DeepSeek, vLLM, llama.cpp, OpenRouter)
  */
 async function listModelsRaw(): Promise<ModelInfo[]> {
+  if (cliBackend) return cliBackend.listModels();
+
   // OpenRouter short-circuit — no point probing LM Studio/Ollama-specific
   // endpoints. /v1/models returns richer metadata than our fallback path
   // normally exposes: context_length, architecture.input_modalities, pricing.
@@ -1261,6 +1307,7 @@ interface RoutingDecision {
   modelId: string;
   hints: PromptHints;
   suggestion?: string;  // info about routing decision
+  overridden: boolean;
 }
 
 async function routeToModel(taskType: TaskType, override?: string): Promise<RoutingDecision> {
@@ -1270,7 +1317,7 @@ async function routeToModel(taskType: TaskType, override?: string): Promise<Rout
   const pinned = override || LM_MODEL;
   if (pinned) {
     const hints = getPromptHints(pinned);
-    return { modelId: pinned, hints };
+    return { modelId: pinned, hints, overridden: !!override };
   }
 
   let models: ModelInfo[];
@@ -1279,7 +1326,7 @@ async function routeToModel(taskType: TaskType, override?: string): Promise<Rout
   } catch {
     // Can't reach server — fall back to default (empty string; caller handles)
     const hints = getPromptHints(LM_MODEL);
-    return { modelId: LM_MODEL || '', hints };
+    return { modelId: LM_MODEL || '', hints, overridden: false };
   }
 
   const loaded = models.filter((m) => m.state === 'loaded' || !m.state);
@@ -1287,7 +1334,7 @@ async function routeToModel(taskType: TaskType, override?: string): Promise<Rout
 
   if (loaded.length === 0) {
     const hints = getPromptHints(LM_MODEL);
-    return { modelId: LM_MODEL || '', hints };
+    return { modelId: LM_MODEL || '', hints, overridden: false };
   }
 
   // Score each loaded model for the requested task type
@@ -1313,7 +1360,7 @@ async function routeToModel(taskType: TaskType, override?: string): Promise<Rout
   }
 
   const hints = getPromptHints(bestModel.id, bestModel.arch);
-  const result: RoutingDecision = { modelId: bestModel.id, hints };
+  const result: RoutingDecision = { modelId: bestModel.id, hints, overridden: false };
 
   // If the best loaded model isn't ideal for this task, suggest a better available one.
   // We don't JIT-load because model loading takes minutes and the MCP SDK has a ~60s
@@ -1811,6 +1858,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           model: route.modelId,
           responseFormat,
           progressToken,
+          taskType: 'chat',
+          overridden: route.overridden,
         });
 
         const footer = formatFooter(resp);
@@ -1854,6 +1903,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           model: route.modelId,
           responseFormat,
           progressToken,
+          taskType: 'analysis',
+          overridden: route.overridden,
         });
 
         const footer = formatFooter(resp);
@@ -1895,6 +1946,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           maxTokens: codeMaxTokens ?? DEFAULT_MAX_TOKENS,
           model: route.modelId,
           progressToken,
+          taskType: 'code',
+          overridden: route.overridden,
         });
 
         const codeFooter = formatFooter(codeResp, lang);
@@ -2022,6 +2075,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           maxTokens: codeMaxTokens,
           model: route.modelId,
           progressToken,
+          taskType: 'code',
+          overridden: route.overridden,
         });
 
         const readSummary = successCount === paths.length
@@ -2191,6 +2246,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'embed': {
+        if (cliBackend && !(cliBackend as unknown as InferenceBackend).embed) {
+          return { content: [{ type: 'text', text: 'Embeddings are not available with the CLI backend. Set HOUTINI_LM_EMBED_ENDPOINT or use the OpenAI-compatible backend.' }], isError: true };
+        }
         const { input, model: embedModel } = args as { input: string; model?: string };
 
         return await withInferenceLock(async () => {
@@ -2338,6 +2396,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function main() {
+  await initBackend();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write(`Houtini LM server running (${LM_BASE_URL})\n`);
