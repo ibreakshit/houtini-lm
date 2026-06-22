@@ -449,7 +449,7 @@ On **remote** providers (OpenRouter, DeepSeek, Groq, Cerebras, and anything dete
 
 ## CLI delegation backend
 
-The CLI backend delegates inference to locally-installed AI CLIs (Codex, Gemini, Claude) instead of an OpenAI-compatible HTTP server. Each CLI runs in agentic-lockdown mode — read-only, single-response — so it cannot edit files or run mutating commands. Prompts are passed inline; the CLIs return one response and exit.
+The CLI backend delegates inference to locally-installed AI CLIs (Codex, Claude) instead of an OpenAI-compatible HTTP server. Each CLI runs in agentic-lockdown mode — read-only, single-response — so it cannot edit files or run mutating commands. Prompts are passed inline; the CLIs return one response and exit.
 
 ### Activation
 
@@ -481,7 +481,7 @@ claude mcp add houtini-lm \
 
 ### Pool config (`HOUTINI_LM_CLI_CONFIG`)
 
-The config file is a JSON object with a `profiles` array and an optional `defaults` block. A working 3-profile example (codex + gemini + claude) lives at [`docs/examples/cli-config.example.json`](docs/examples/cli-config.example.json).
+The config file is a JSON object with a `profiles` array and an optional `defaults` block. A working 2-profile example (codex + claude) lives at [`docs/examples/cli-config.example.json`](docs/examples/cli-config.example.json).
 
 **Top-level fields:**
 
@@ -496,7 +496,7 @@ The config file is a JSON object with a `profiles` array and an optional `defaul
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | — | Unique identifier used for overrides and logs. Required. |
-| `provider` | string | — | `codex` \| `gemini` \| `claude` \| `llm` \| `custom`. Required. |
+| `provider` | string | — | `codex` \| `claude` \| `llm` \| `custom`. Required. |
 | `bin` | string | — | Executable name or absolute path (e.g. `codex`, `/usr/local/bin/claude`). Required. |
 | `model` | string | — | Model identifier passed to the CLI (e.g. `gpt-5.4-codex`, `sonnet`). Required. |
 | `configHome` | string | — | Path to isolate this profile's auth credentials (see multi-subscription below). |
@@ -521,7 +521,8 @@ Each profile's `configHome` isolates that CLI's auth so you can spread calls acr
 
 - **codex** — sets `CODEX_HOME` to `configHome`.
 - **claude** — sets `CLAUDE_CONFIG_DIR` to `configHome`.
-- **gemini** — uses `~/.gemini` by default (recommended, and must be authenticated globally before use). If `configHome` is set it is applied by setting the `HOME` env var for that invocation — this relocates the entire home directory, which is heavier-handed than codex's `CODEX_HOME` or claude's `CLAUDE_CONFIG_DIR`. Multi-account spreading is cleanest on codex or claude.
+
+> **Gemini is intentionally NOT supported via the CLI backend:** Google deprecated consumer-subscription auth for the Gemini CLI on 2026-06-18, so it now requires a developer/enterprise API key and yields no subscription token savings — reach Gemini via the OpenAI-compatible/LiteLLM path instead.
 
 ### Selection logic
 
@@ -537,7 +538,6 @@ All CLIs are invoked in read-only, single-response mode so they cannot edit file
 | Provider | Flag |
 |----------|------|
 | codex | `exec -s read-only` |
-| gemini | `--approval-mode plan` |
 | claude | `--permission-mode plan` |
 
 Prompts pass all content inline. The CLIs return one response and exit.

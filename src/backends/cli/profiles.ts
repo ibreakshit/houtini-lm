@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import type { ModelInfo, TaskType } from '../../types.js';
 
-export type Provider = 'codex' | 'gemini' | 'claude' | 'llm' | 'custom';
-const PROVIDERS: Provider[] = ['codex', 'gemini', 'claude', 'llm', 'custom'];
+export type Provider = 'codex' | 'claude' | 'llm' | 'custom';
+const PROVIDERS: Provider[] = ['codex', 'claude', 'llm', 'custom'];
 const TASK_TYPES: TaskType[] = ['code', 'chat', 'analysis', 'embedding'];
 
 export interface CliProfile {

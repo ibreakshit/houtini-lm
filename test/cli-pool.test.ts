@@ -6,7 +6,7 @@ import type { CliConfig } from '../src/backends/cli/profiles.js';
 const cfg: CliConfig = { profiles: [
   { id: 'codex-a', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code'], concurrency: 1 },
   { id: 'codex-b', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code'], concurrency: 1 },
-  { id: 'gem',     provider: 'gemini', bin: 'gemini', model: 'gemini-2.5-pro', capabilities: ['analysis'], contextWindow: 1_000_000 },
+  { id: 'claude-big', provider: 'claude', bin: 'claude', model: 'claude-3-5-sonnet', capabilities: ['analysis'], contextWindow: 1_000_000 },
 ], defaults: { cooldownMs: 1000 } };
 
 test('scoring rewards capability match, coder bonus, big-context analysis', () => {

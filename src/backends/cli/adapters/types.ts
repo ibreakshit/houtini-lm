@@ -29,7 +29,6 @@ export function homeEnv(p: CliProfile): Record<string, string> {
   switch (p.provider) {
     case 'codex': return { CODEX_HOME: p.configHome };
     case 'claude': return { CLAUDE_CONFIG_DIR: p.configHome };
-    case 'gemini': return { HOME: p.configHome }; // gemini is global by spec §4.1; honoured if a home is set
     default: return {};
   }
 }

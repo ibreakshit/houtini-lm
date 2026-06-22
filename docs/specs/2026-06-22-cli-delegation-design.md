@@ -7,7 +7,7 @@
 
 ## 1. Goal
 
-Fork houtini-lm so it can delegate bounded tasks to locally installed LLM **CLI clients** (`codex`, `gemini`, `claude`, `llm`) running in **single-response mode**, instead of (only) an OpenAI-compatible HTTP endpoint. Each CLI invocation is pinned to an isolated config-home so that multiple **subscriptions** of the same provider can be pooled, spreading token spend across accounts.
+Fork houtini-lm so it can delegate bounded tasks to locally installed LLM **CLI clients** (`codex`, `claude`, `llm`) running in **single-response mode**, instead of (only) an OpenAI-compatible HTTP endpoint. Each CLI invocation is pinned to an isolated config-home so that multiple **subscriptions** of the same provider can be pooled, spreading token spend across accounts.
 
 Non-goal: replace the existing local/OpenAI-compatible path. It stays intact; the CLI path is an additional, opt-in backend.
 
@@ -37,7 +37,7 @@ We implement an equivalent (smaller) selection layer in TypeScript. We do **not*
 
 | # | Decision | Choice |
 |---|---|---|
-| D1 | Execution engine | **Subprocess CLI wrappers** (`codex exec`, `gemini -p`, `claude -p`, `llm`) in single-response mode. Not token-replay. |
+| D1 | Execution engine | **Subprocess CLI wrappers** (`codex exec`, `claude -p`, `llm`) in single-response mode. Not token-replay. |
 | D2 | Keep existing OpenAI/local path? | **Yes** — CLI path is an added, opt-in backend; current gpt-oss usage unaffected. |
 | D3 | Selection precedence | **Preserve `routeToModel`**: explicit override → capability scoring. |
 | D4 | Spreading across subscriptions | **Round-robin / least-recently-used tie-break** among equally-scored same-class profiles, **plus automatic failover to the next candidate when a profile is on cooldown or otherwise unavailable** (e.g. after 429/quota/timeout). Applies to **capability-routed** picks only — explicit overrides are honoured verbatim (D6). This is the only behavioural extension to the existing selection logic. |
@@ -46,7 +46,7 @@ We implement an equivalent (smaller) selection layer in TypeScript. We do **not*
 
 ## 4.1 Requirements & per-provider auth
 
-**`gemini` runs on global auth (documented requirement).** The Gemini CLI is installed globally and authenticated globally (`~/.gemini` + `GEMINI_API_KEY`/OAuth). It is **not** isolated per profile — all gemini profiles share that single global account. Practically, gemini contributes **one** account to the pool (you may still define multiple gemini profiles for different *models*, but they bill the same subscription). Multi-subscription spreading therefore applies to **codex** (`CODEX_HOME`) and **claude** (`CLAUDE_CONFIG_DIR`), which isolate auth per config-home.
+**Gemini is intentionally NOT supported via the CLI backend.** Google deprecated consumer-subscription auth for the Gemini CLI on 2026-06-18, so it now requires a developer/enterprise API key and yields no subscription token savings — reach Gemini via the OpenAI-compatible/LiteLLM path instead. Multi-subscription spreading therefore applies to **codex** (`CODEX_HOME`) and **claude** (`CLAUDE_CONFIG_DIR`), which isolate auth per config-home.
 
 **Auth-error handling (no silent failures).** When a profile's CLI fails due to auth (missing/expired credentials, 401/403, provider auth message), the backend will:
 1. **Log** to stderr with a `[houtini-lm][AUTH]` prefix including the profile id + provider.
@@ -54,7 +54,7 @@ We implement an equivalent (smaller) selection layer in TypeScript. We do **not*
 3. **Mark the profile `auth-blocked`** — a state distinct from transient cooldown; it does *not* auto-recover on a timer (the pool skips it until auth is fixed and config reloaded).
 4. **Alert (optional)** via `HOUTINI_LM_ALERT_WEBHOOK` — POST `{profile, provider, kind:"auth", message, ts}` for external monitoring.
 
-This applies to every provider; a gemini global-auth failure is reported the same way and blocks the single gemini profile.
+This applies to every provider.
 
 ## 5. Architecture
 
@@ -90,10 +90,6 @@ Active backend chosen by `HOUTINI_LM_BACKEND = openai-compat | cli | auto` (`aut
       "configHome": "~/.houtini/profiles/codex-main",      // → CODEX_HOME
       "capabilities": ["code","analysis"], "contextWindow": 256000,
       "concurrency": 1, "weight": 1, "enabled": true },
-
-    { "id": "gemini-a", "provider": "gemini", "bin": "gemini", "model": "gemini-2.5-pro",
-      "configHome": "~/.houtini/profiles/gemini-a",        // → HOME / gemini settings dir
-      "capabilities": ["analysis","chat"], "contextWindow": 1000000 },
 
     { "id": "claude-sub", "provider": "claude", "bin": "claude", "model": "sonnet",
       "configHome": "~/.houtini/profiles/claude-sub",      // → CLAUDE_CONFIG_DIR
@@ -136,12 +132,11 @@ Verified single-response invocations (from each CLI's `--help`):
 | Provider | Invocation | Config-home env | Output parse |
 |---|---|---|---|
 | **codex** 0.141 | `codex exec --skip-git-repo-check -s read-only -m <model> -o <tmpfile>` (prompt via stdin) | `CODEX_HOME` | `-o` file = final text; `--json` JSONL → usage |
-| **gemini** 0.47 | `gemini -p <prompt> -m <model> --approval-mode plan -o json` | global `~/.gemini` (see §4.1) | JSON → text + `usageMetadata` |
 | **claude** 2.1 | `claude -p --model <model> --output-format json --no-session-persistence --permission-mode plan --disallowed-tools <built-ins>` (prompt via stdin) | `CLAUDE_CONFIG_DIR` | JSON → `result` + `usage` |
 | **llm** 0.31 | `llm -m <model> --no-stream <prompt>` | (n/a) | stdout text |
 | **custom** | config-driven `argvTemplate` + `promptVia` (stdin/arg) + `parse` (text/json/jsonpath) | per-config | generic |
 
-**Safety (mandatory):** `codex exec` and `claude -p` are agentic. The flags above lock them to pure text generation — codex `-s read-only`; claude `--permission-mode plan --disallowed-tools <built-ins>`; gemini `--approval-mode plan`. houtini passes file *contents* inline in prompts, so the CLI never needs filesystem access. A delegation must not be able to edit files or run commands.
+**Safety (mandatory):** `codex exec` and `claude -p` are agentic. The flags above lock them to pure text generation — codex `-s read-only`; claude `--permission-mode plan --disallowed-tools <built-ins>`. houtini passes file *contents* inline in prompts, so the CLI never needs filesystem access. A delegation must not be able to edit files or run commands.
 
 ## 9. Execution mechanics
 
@@ -154,7 +149,7 @@ Verified single-response invocations (from each CLI's `--help`):
 ## 10. Cross-cutting behaviour (kept working)
 
 - **Token footer / stats**: adapters populate `StreamingResult.usage` from each CLI's JSON; where absent, estimate from char count. The sql.js lifetime-totals DB and `stats` tool are untouched.
-- **Structured output** (`json_schema` → `response_format`): map to each adapter's schema flag (codex `--output-schema`, claude `--json-schema`, gemini JSON mode); for CLIs lacking one, inject schema into the prompt and validate/parse. Per-adapter capability flag.
+- **Structured output** (`json_schema` → `response_format`): map to each adapter's schema flag (codex `--output-schema`, claude `--json-schema`); for CLIs lacking one, inject schema into the prompt and validate/parse. Per-adapter capability flag.
 - **Reasoning/thinking**: bypass houtini's per-family OpenAI reasoning juggling; let the CLI/model handle it (set effort via CLI flag/config where wanted).
 - **Embeddings**: CLI backend `embed` → optional OpenAI-compat fall-through (`HOUTINI_LM_EMBED_ENDPOINT`) or clear unsupported error.
 - **Env overrides (CLI backend)**: `HOUTINI_LM_PROFILE` pins a single profile by id, used verbatim with no failover (CLI backend only); equivalent to passing `model` in each tool call. `HOUTINI_LM_MODEL` is a soft default that sets the model name passed to the pool but does not bypass capability routing or failover.
@@ -168,7 +163,6 @@ src/backends/cli/index.ts             CliBackend: select → spawn → parse
 src/backends/cli/pool.ts              rotation (RR/LRU) + cooldown/failover state
 src/backends/cli/profiles.ts          config load + validation
 src/backends/cli/adapters/codex.ts
-src/backends/cli/adapters/gemini.ts
 src/backends/cli/adapters/claude.ts
 src/backends/cli/adapters/llm.ts
 src/backends/cli/adapters/custom.ts
@@ -183,10 +177,9 @@ Existing-code edits: `index.ts` backend dispatch at the two call-sites + backend
 
 ## 13. Open risks (verify during planning)
 
-1. **Same-provider isolation** — `CODEX_HOME` (codex) and `CLAUDE_CONFIG_DIR` (claude) confirmed; these carry multi-account spreading. **gemini is intentionally global-auth / single-account** per §4.1, so no isolation is needed. *Resolved by decision.*
+1. **Same-provider isolation** — `CODEX_HOME` (codex) and `CLAUDE_CONFIG_DIR` (claude) confirmed; these carry multi-account spreading.
 2. **Latency** — cold subprocess start adds seconds/call; acceptable for houtini's "trade wall-clock for tokens" positioning, but measure.
 3. **Agentic lockdown** — verify exact no-tools/read-only flags for the installed CLI versions.
-4. **gemini auth** — profile home must contain a valid API key / OAuth.
 
 ## 14. Out of scope (YAGNI for v1)
 

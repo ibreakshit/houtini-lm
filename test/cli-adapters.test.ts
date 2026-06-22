@@ -6,7 +6,6 @@ import type { CliProfile } from '../src/backends/cli/profiles.js';
 
 const codexP: CliProfile = { id: 'cx', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code'], configHome: '/tmp/cx' };
 const claudeP: CliProfile = { id: 'cl', provider: 'claude', bin: 'claude', model: 'sonnet', capabilities: ['chat'], configHome: '/tmp/cl' };
-const gemP: CliProfile = { id: 'gm', provider: 'gemini', bin: 'gemini', model: 'gemini-2.5-pro', capabilities: ['analysis'] };
 
 test('codex builds a read-only non-interactive exec invocation with --json and CODEX_HOME', () => {
   const inv = getAdapter('codex').buildInvocation(codexP, 'hi', {}, '/tmp/out.txt');
@@ -54,15 +53,6 @@ test('claude builds -p json invocation with CLAUDE_CONFIG_DIR, plan lockdown, an
   assert.equal(out.usage?.prompt_tokens, 3);
 });
 
-test('gemini builds invocation with read-only approval-mode plan', () => {
-  const inv = getAdapter('gemini').buildInvocation(gemP, 'hi', {}, '/tmp/o');
-  assert.ok(inv.argv.includes('--approval-mode') && inv.argv.includes('plan'));
-});
-
-test('gemini parses JSON response text', () => {
-  const out = getAdapter('gemini').parseOutput({ stdout: JSON.stringify({ response: 'G' }), stderr: '', exitCode: 0, timedOut: false });
-  assert.equal(out.content, 'G');
-});
 
 test('classifyError detects auth and rate-limit from stderr', () => {
   const a = getAdapter('codex');

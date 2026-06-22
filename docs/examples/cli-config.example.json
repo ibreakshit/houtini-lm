@@ -12,16 +12,6 @@
       "weight": 2
     },
     {
-      "id": "gemini",
-      "provider": "gemini",
-      "bin": "gemini",
-      "model": "gemini-2.5-pro",
-      "capabilities": ["analysis", "chat"],
-      "contextWindow": 1000000,
-      "concurrency": 1,
-      "weight": 1
-    },
-    {
       "id": "claude-sub",
       "provider": "claude",
       "bin": "claude",
