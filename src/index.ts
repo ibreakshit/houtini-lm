@@ -37,6 +37,7 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, basename } from 'node:path';
 import { CliBackend } from './backends/cli/index.js';
 import { loadCliConfig } from './backends/cli/profiles.js';
+import { shouldUseCli } from './backends/cli/activation.js';
 
 // Env var naming: HOUTINI_LM_* is the preferred namespace now that we
 // support more than just LM Studio. The legacy LM_STUDIO_* names remain
@@ -47,12 +48,13 @@ const HOUTINI_LM_ALERT_WEBHOOK = process.env.HOUTINI_LM_ALERT_WEBHOOK || '';
 let cliBackend: CliBackend | null = null;
 
 async function initBackend(): Promise<void> {
-  const useCli = HOUTINI_LM_BACKEND === 'cli' || (HOUTINI_LM_BACKEND === '' && HOUTINI_LM_CLI_CONFIG !== '' && process.env.HOUTINI_LM_BACKEND !== 'openai-compat');
-  if (useCli && HOUTINI_LM_CLI_CONFIG) {
-    const cfg = await loadCliConfig(HOUTINI_LM_CLI_CONFIG);
-    cliBackend = new CliBackend(cfg, { alertWebhook: HOUTINI_LM_ALERT_WEBHOOK || undefined });
-    process.stderr.write(`[houtini-lm] CLI backend active: ${cfg.profiles.length} profile(s)\n`);
+  if (!shouldUseCli(HOUTINI_LM_BACKEND, HOUTINI_LM_CLI_CONFIG)) return;   // unset/openai-compat → OpenAI, even if a config exists
+  if (!HOUTINI_LM_CLI_CONFIG) {
+    throw new Error('HOUTINI_LM_BACKEND=cli requires HOUTINI_LM_CLI_CONFIG to be set');
   }
+  const cfg = await loadCliConfig(HOUTINI_LM_CLI_CONFIG);
+  cliBackend = new CliBackend(cfg, { alertWebhook: HOUTINI_LM_ALERT_WEBHOOK || undefined });
+  process.stderr.write(`[houtini-lm] CLI backend active: ${cfg.profiles.length} profile(s)\n`);
 }
 
 const LM_BASE_URL =
