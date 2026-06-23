@@ -658,7 +658,7 @@ async function timedRead(
  */
 async function chatCompletionStreaming(
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
+  options: ChatOptions & { progressToken?: string | number } = {},
 ): Promise<StreamingResult> {
   if (activeBackend) {
     // Active backends (CLI) are opaque — no token streaming — so emit an immediate
@@ -691,7 +691,7 @@ async function getActiveModel(): Promise<ModelInfo | null> {
 
 async function chatCompletionStreamingInner(
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
+  options: ChatOptions & { progressToken?: string | number } = {},
 ): Promise<StreamingResult> {
   // Resolve active model once — we use it for both context-aware max_tokens
   // and for auto-injecting the model field when the caller didn't specify one.
@@ -1593,6 +1593,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optional: pin to a specific model id (e.g. "nvidia/nemotron-3-nano-30b-a3b:free" on OpenRouter, "qwen.qwen3-coder-30b-a3b-instruct" on LM Studio). When set, overrides automatic routing. Useful on providers with many models where auto-routing picks poorly.',
         },
+        tier: { type: 'string', enum: ['local', 'cli'], description: 'Route to the local (cheap) or cli (powerful) tier. Omit for default rules. Ignored unless HOUTINI_LM_BACKEND=router.' },
       },
       required: ['message'],
     },
@@ -1644,6 +1645,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optional: pin to a specific model id. When set, overrides automatic routing.',
         },
+        tier: { type: 'string', enum: ['local', 'cli'], description: 'Route to the local (cheap) or cli (powerful) tier. Omit for default rules. Ignored unless HOUTINI_LM_BACKEND=router.' },
       },
       required: ['instruction'],
     },
@@ -1687,6 +1689,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optional: pin to a specific model id. When set, overrides automatic routing.',
         },
+        tier: { type: 'string', enum: ['local', 'cli'], description: 'Route to the local (cheap) or cli (powerful) tier. Omit for default rules. Ignored unless HOUTINI_LM_BACKEND=router.' },
       },
       required: ['code', 'task'],
     },
@@ -1731,6 +1734,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optional: pin to a specific model id. When set, overrides automatic routing.',
         },
+        tier: { type: 'string', enum: ['local', 'cli'], description: 'Route to the local (cheap) or cli (powerful) tier. Omit for default rules. Ignored unless HOUTINI_LM_BACKEND=router.' },
       },
       required: ['paths', 'task'],
     },
@@ -1870,13 +1874,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'chat': {
-        const { message, system, temperature, max_tokens, json_schema, model } = args as {
+        const { message, system, temperature, max_tokens, json_schema, model, tier } = args as {
           message: string;
           system?: string;
           temperature?: number;
           max_tokens?: number;
           json_schema?: { name: string; schema: Record<string, unknown>; strict?: boolean };
           model?: string;
+          tier?: 'local' | 'cli';
         };
 
         const route = await routeToModel('chat', model);
@@ -1900,6 +1905,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           progressToken,
           taskType: 'chat',
           overridden: route.overridden,
+          tier,
+          tool: 'chat',
         });
 
         const footer = formatFooter(resp);
@@ -1907,7 +1914,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'custom_prompt': {
-        const { system, context, instruction, temperature, max_tokens, json_schema, model } = args as {
+        const { system, context, instruction, temperature, max_tokens, json_schema, model, tier } = args as {
           system?: string;
           context?: string;
           instruction: string;
@@ -1915,6 +1922,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           max_tokens?: number;
           json_schema?: { name: string; schema: Record<string, unknown>; strict?: boolean };
           model?: string;
+          tier?: 'local' | 'cli';
         };
 
         const route = await routeToModel('analysis', model);
@@ -1945,6 +1953,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           progressToken,
           taskType: 'analysis',
           overridden: route.overridden,
+          tier,
+          tool: 'custom_prompt',
         });
 
         const footer = formatFooter(resp);
@@ -1954,12 +1964,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'code_task': {
-        const { code, task, language, max_tokens: codeMaxTokens, model } = args as {
+        const { code, task, language, max_tokens: codeMaxTokens, model, tier } = args as {
           code: string;
           task: string;
           language?: string;
           max_tokens?: number;
           model?: string;
+          tier?: 'local' | 'cli';
         };
 
         const lang = language || 'unknown';
@@ -1988,6 +1999,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           progressToken,
           taskType: 'code',
           overridden: route.overridden,
+          tier,
+          tool: 'code_task',
         });
 
         const codeFooter = formatFooter(codeResp, lang);
@@ -1996,12 +2009,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'code_task_files': {
-        const { paths, task, language, max_tokens: codeMaxTokens, model } = args as {
+        const { paths, task, language, max_tokens: codeMaxTokens, model, tier } = args as {
           paths: string[];
           task: string;
           language?: string;
           max_tokens?: number;
           model?: string;
+          tier?: 'local' | 'cli';
         };
 
         if (!Array.isArray(paths) || paths.length === 0) {
@@ -2117,6 +2131,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           progressToken,
           taskType: 'code',
           overridden: route.overridden,
+          tier,
+          tool: 'code_task_files',
+          fileCount: paths.length,
         });
 
         const readSummary = successCount === paths.length
@@ -2256,6 +2273,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         text += `${sessionStats}\n\n`;
         text += `The local LLM is available. You can delegate tasks using chat, custom_prompt, code_task, code_task_files, or embed.`;
 
+        if (activeBackend instanceof Router) {
+          const routerModels = await activeBackend.listModels();
+          const byTier = (t: string) => routerModels.filter((m) => (m as { tier?: string }).tier === t).map((m) => m.id);
+          const localIds = byTier('local');
+          const cliIds = byTier('cli');
+          text += `\n\nRouting topology:\n`;
+          text += `  local: ${localIds.length > 0 ? localIds.join(', ') : '(none)'}\n`;
+          text += `  cli: ${cliIds.length > 0 ? cliIds.join(', ') : '(none)'}\n`;
+          text += `\nRouting rules:\n${activeBackend.describeRouting()}`;
+        }
+
         return { content: [{ type: 'text', text }] };
       }
 
@@ -2280,6 +2308,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (text) text += '\n\n';
           text += `Available models (○ downloaded, not loaded):\n\n`;
           text += (await Promise.all(available.map((m) => formatModelDetail(m, true)))).join('\n\n');
+        }
+
+        if (activeBackend instanceof Router) {
+          const routerModels = await activeBackend.listModels();
+          const byTier = (t: string) => routerModels.filter((m) => (m as { tier?: string }).tier === t).map((m) => m.id);
+          const localIds = byTier('local');
+          const cliIds = byTier('cli');
+          if (text) text += '\n\n';
+          text += `Routing topology:\n`;
+          text += `  local: ${localIds.length > 0 ? localIds.join(', ') : '(none)'}\n`;
+          text += `  cli: ${cliIds.length > 0 ? cliIds.join(', ') : '(none)'}\n`;
+          text += `\nRouting rules:\n${activeBackend.describeRouting()}`;
         }
 
         return { content: [{ type: 'text', text }] };
