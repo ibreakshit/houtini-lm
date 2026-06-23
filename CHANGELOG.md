@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **CLI delegation backend** (`HOUTINI_LM_BACKEND=cli` / `auto`) — delegate inference to locally-installed AI CLIs (codex, claude, llm, custom) instead of an HTTP endpoint, spreading spend across CLI subscriptions. Each CLI runs in read-only, single-response (agentic-lockdown) mode. Profile pool with capability/role scoring, configurable `tieBreak` (`first-loaded` default, `round-robin` opt-in), per-profile `concurrency`, cooldown/auth failover, and `configHome` isolation for multi-subscription spreading. Config via `HOUTINI_LM_CLI_CONFIG`; per-profile pin via `HOUTINI_LM_PROFILE`; auth-failure alerting via `HOUTINI_LM_ALERT_WEBHOOK`. `json_schema` is enforced on codex via `--output-schema`. See [README](README.md#cli-delegation-backend).
+- **Tiered routing** (`HOUTINI_LM_BACKEND=router`) — one instance holds the local backend **and** the CLI backend and routes per call: exact `model` / `HOUTINI_LM_PROFILE` override → caller `tier: "local" | "cli"` → deterministic escalation rules → else local. CLI escalation only moves up; `embed` is always local. Default rules escalate cross-file work (`code_task_files` with ≥2 files) and large inputs (≥28k chars; `analysis` ≥12k; `code` ≥16k); override with `HOUTINI_LM_ROUTING_CONFIG`. `chat` / `custom_prompt` / `code_task` / `code_task_files` gain a `tier` parameter; `discover` / `list_models` show the tier-grouped topology plus the active rules. See [README](README.md#tiered-routing-router-mode).
+- **`npm run shakedown:cli`** (`shakedown-cli.mjs`) — live end-to-end routing self-test: drives the built server over stdio in router mode and asserts which tier answered each case. Documented in [SHAKEDOWN.md](SHAKEDOWN.md) Part 2.
+
+### Notes
+- Gemini is intentionally **not** supported via the CLI backend (Google deprecated consumer-subscription CLI auth on 2026-06-18 — no token savings). Reach Gemini through the OpenAI-compatible / LiteLLM path instead.
+
 ## [2.13.2] - 2026-04-21
 
 ### Fixed

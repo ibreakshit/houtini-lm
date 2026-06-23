@@ -9,7 +9,8 @@
       "capabilities": ["code", "analysis"],
       "contextWindow": 256000,
       "concurrency": 2,
-      "weight": 2
+      "weight": 2,
+      "roles": ["code"]
     },
     {
       "id": "claude-sub",
@@ -23,6 +24,7 @@
       "weight": 1
     }
   ],
+  "tieBreak": "first-loaded",
   "defaults": {
     "timeoutMs": 180000,
     "cooldownMs": 60000

@@ -30,6 +30,8 @@ User goals:
 
 ## 3. Design
 
+> **Implementation note (as-built, 2026-06-23):** the shipped code diverges from §3.1 and §4 below to minimise the diff against upstream. There is **no** `OpenAICompatBackend` / `openai-compat.ts` extraction and **no** `BackendRegistry` class. Instead the inline local `/v1` path stays in `index.ts` and is wrapped by a thin `localBackend` `InferenceBackend` adapter; `Router` (`src/backends/router.ts`) holds `{ local, cli }` directly; and the three seams dispatch through a module-level `activeBackend` (`null` ⇒ the unchanged inline path). `listModelsRaw()` was split into a merged dispatcher plus a local-only `listLocalModelsRaw()` to prevent a `Router.listModels → localBackend.listModels → listModelsRaw` recursion. The routing **behaviour** (precedence, rules, tiers, discovery output) matches §3.2–§3.6; only the file/class structure differs. See [the plan](../plans/2026-06-23-tiered-routing.md) and `DEVELOPER.md` § *Inference backends & tiered routing*.
+
 ### 3.1 Backend registry
 Promote both paths to first-class `InferenceBackend`s in one process:
 - **`OpenAICompatBackend`** (NEW) — extract today's inline local path (streaming `/v1/chat/completions`, `listModelsRaw`, `/v1/embeddings`) behind the `InferenceBackend` interface. **Behavior-identical** to today.

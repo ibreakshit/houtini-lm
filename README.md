@@ -207,6 +207,8 @@ Leave both unset and the router picks.
 
 ## Tools
 
+In **router mode**, the `chat`, `custom_prompt`, `code_task`, and `code_task_files` tools also accept a `tier: "local" | "cli"` parameter to route a single call explicitly (see [Tiered routing](#tiered-routing-router-mode)); it is ignored in the other backend modes.
+
 ### `chat`
 
 The workhorse. Send a task, get an answer. The description includes planning triggers that nudge Claude to identify offloadable work when it's starting a big task.
@@ -383,6 +385,8 @@ Summary
 
 Want a human-readable quality review rather than just latency numbers? Paste [SHAKEDOWN.md](./SHAKEDOWN.md) into a Claude session that has houtini-lm attached — Claude will drive the seven steps and write you a report on output quality as well as performance.
 
+**Router mode:** to verify tiered routing against real backends (easy work → local, hard work → CLI), run `npm run shakedown:cli` — see [Part 2 of `SHAKEDOWN.md`](./SHAKEDOWN.md). It drives the built server over stdio with `HOUTINI_LM_BACKEND=router` and asserts which tier actually answered each case.
+
 ## Think-block handling
 
 Thinking models burn part of their output budget on invisible reasoning before producing an answer. Left alone, small models at default `max_tokens` will happily spend the whole budget reasoning and return an empty body. How houtini-lm handles this depends on whether the provider exposes reasoning as a separate channel or in-band.
@@ -460,13 +464,15 @@ Set `HOUTINI_LM_BACKEND` to choose the backend:
 | *(unset)* or `openai-compat` | OpenAI-compatible path (default, existing behaviour). A CLI config file is ignored even if present. |
 | `cli` | CLI backend. Requires `HOUTINI_LM_CLI_CONFIG` — the server exits with a fatal error if it is missing. |
 | `auto` | CLI backend if `HOUTINI_LM_CLI_CONFIG` is set; otherwise OpenAI-compatible path. |
+| `router` | **Tiered router** — holds the OpenAI-compatible (local) backend **and** the CLI backend in one instance and routes per call (see [Tiered routing](#tiered-routing-router-mode)). Requires `HOUTINI_LM_CLI_CONFIG`; `HOUTINI_LM_ROUTING_CONFIG` is optional. |
 
 ### Environment variables
 
 | Variable | Required | What it does |
 |----------|----------|-------------|
-| `HOUTINI_LM_BACKEND` | no | `openai-compat` (default) \| `cli` \| `auto` |
-| `HOUTINI_LM_CLI_CONFIG` | when `cli` | Filesystem path to the JSON pool config file (absolute recommended; relative paths are resolved against the server's working directory). |
+| `HOUTINI_LM_BACKEND` | no | `openai-compat` (default) \| `cli` \| `auto` \| `router` |
+| `HOUTINI_LM_CLI_CONFIG` | when `cli` or `router` | Filesystem path to the JSON pool config file (absolute recommended; relative paths are resolved against the server's working directory). |
+| `HOUTINI_LM_ROUTING_CONFIG` | no (`router` only) | Path to a JSON file overriding the default escalation rules (see [Tiered routing](#tiered-routing-router-mode)). When unset, built-in defaults apply. |
 | `HOUTINI_LM_ALERT_WEBHOOK` | no | URL to POST `{ profile, provider, kind: "auth", ts }` on auth failures. |
 | `HOUTINI_LM_PROFILE` | no | Pin a single profile by id — used verbatim with **no failover** (CLI backend only). The per-call `model` tool parameter takes precedence over it. `HOUTINI_LM_MODEL` remains a soft default: pool-based capability routing and failover still apply when only `HOUTINI_LM_MODEL` is set. |
 
@@ -490,6 +496,7 @@ The config file is a JSON object with a `profiles` array and an optional `defaul
 | `profiles` | array | One entry per CLI subscription. Required, non-empty. |
 | `defaults.timeoutMs` | number | Per-call subprocess timeout in ms (default 180000). |
 | `defaults.cooldownMs` | number | How long a rate-limited profile sits out before re-entering the pool (default 60000). |
+| `tieBreak` | string | How equally-scored profiles are ordered: `first-loaded` (default — config order) or `round-robin` (least-recently-used). |
 
 **Profile fields:**
 
@@ -501,6 +508,7 @@ The config file is a JSON object with a `profiles` array and an optional `defaul
 | `model` | string | — | Model identifier passed to the CLI (e.g. `gpt-5.4-codex`, `sonnet`). Required. |
 | `configHome` | string | — | Path to isolate this profile's auth credentials (see multi-subscription below). |
 | `capabilities` | array | `[]` | Task types this profile handles: `code` \| `chat` \| `analysis` \| `embedding`. Profiles with no matching capability for a task are reachable only via explicit override. Note: `embedding` is accepted by the validator but CLI profiles cannot serve embeddings — it is not useful for CLI routing. |
+| `roles` | array | — | Optional role tags. When a call's role (currently its task type) matches a profile's `roles`, that profile is preferred ahead of capability score and tie-break. |
 | `contextWindow` | number | — | Reported context window in tokens (informational). |
 | `concurrency` | number | `1` | Max simultaneous in-flight calls on this profile. |
 | `weight` | number | `1` | **Reserved** — parsed and validated but not used in v1 selection. Selection is capability-score then least-recently-used; `weight` has no effect. |
@@ -526,10 +534,11 @@ Each profile's `configHome` isolates that CLI's auth so you can spread calls acr
 
 ### Selection logic
 
-1. **Explicit override** — if the per-call `model` parameter is set, that exact profile runs verbatim with no failover. `HOUTINI_LM_PROFILE` pins a profile by id at the process level (CLI backend only) — also verbatim, no failover. `HOUTINI_LM_MODEL` sets a process-level model default but does not pin a CLI profile — pool-based selection (capability → LRU) still applies unless the per-call `model` param or `HOUTINI_LM_PROFILE` overrides it.
-2. **Capability scoring** — among available profiles, those whose `capabilities` include the current task type score higher (boosted further for `codex`-family profiles on code tasks and large-context profiles on analysis tasks).
-3. **Round-robin / LRU tie-break** — equally-scored profiles rotate by least-recently-used.
-4. **Automatic failover** — on rate-limit (429) or timeout the profile enters cooldown and the next candidate is tried. Auth failures immediately block the profile (see below).
+1. **Explicit override** — if the per-call `model` parameter is set, that exact profile runs verbatim with no failover. `HOUTINI_LM_PROFILE` pins a profile by id at the process level (CLI backend only) — also verbatim, no failover. `HOUTINI_LM_MODEL` sets a process-level model default but does not pin a CLI profile — pool-based selection still applies unless the per-call `model` param or `HOUTINI_LM_PROFILE` overrides it.
+2. **Role match** — if a profile declares `roles` and the call's role (currently the task type) matches, that profile is preferred ahead of capability score.
+3. **Capability scoring** — among available profiles, those whose `capabilities` include the current task type score higher (boosted further for `codex`-family profiles on code tasks and large-context profiles on analysis tasks).
+4. **Tie-break** — equally-scored profiles are ordered by the pool's `tieBreak`: `first-loaded` (default — config order) or `round-robin` (least-recently-used, opt-in).
+5. **Automatic failover** — on rate-limit (429) or timeout the profile enters cooldown and the next candidate is tried. Auth failures immediately block the profile (see below).
 
 ### Agentic lockdown
 
@@ -554,6 +563,41 @@ When a CLI exits with an auth error (401/403 or matching error text):
 2. Surfaced in the tool response so the caller sees it.
 3. The profile is marked auth-blocked — this is **sticky**. The profile does not auto-recover; fix the credentials and restart the server.
 4. If `HOUTINI_LM_ALERT_WEBHOOK` is set, a POST is sent immediately: `{ profile, provider, kind: "auth", ts }`.
+
+### Tiered routing (router mode)
+
+`HOUTINI_LM_BACKEND=router` runs the OpenAI-compatible (local) backend **and** the CLI backend together and picks per call — so cheap, bounded work stays on the local model while work the local model handles badly escalates to the CLI tier. Routing is deterministic and decided up front (no retry-then-escalate):
+
+1. **Exact override** — a per-call `model` (or `HOUTINI_LM_PROFILE`) runs verbatim on whichever backend owns that id.
+2. **Caller `tier`** — the `chat` / `custom_prompt` / `code_task` / `code_task_files` tools take a `tier: "local" | "cli"` parameter. `cli` forces the CLI tier (falls back to local with a stderr note if no CLI is configured); `local` forces local.
+3. **Escalation rules** — with no override and no `tier`, deterministic shape/size rules decide. The built-in defaults escalate to CLI when:
+
+   | Condition | Rationale |
+   |-----------|-----------|
+   | `code_task_files` with ≥ 2 files | cross-file reasoning is a known local weak spot |
+   | any input ≥ 28,000 chars | stays under the local ~60s prefill-timeout cliff |
+   | `analysis` task ≥ 12,000 chars | long / deep analysis |
+   | `code` task ≥ 16,000 chars | large code tasks |
+
+   Everything else stays local. Escalation only ever moves **up** (local → CLI); `embed` is **always** local (the CLI backend cannot embed).
+
+Override the defaults with `HOUTINI_LM_ROUTING_CONFIG` pointing at a JSON file:
+
+```json
+{
+  "escalateToCliWhen": [
+    { "tool": "code_task_files", "minFiles": 2 },
+    { "minInputChars": 28000 },
+    { "taskType": "analysis", "minInputChars": 12000 },
+    { "taskType": "code", "minInputChars": 16000 }
+  ],
+  "default": "local"
+}
+```
+
+A rule matches when **all** its conditions hold (any of `taskType`, `tool`, `minInputChars`, `minInputTokens` [≈ chars/4], `minFiles`); the call escalates if **any** rule matches, otherwise it uses `default` (`local` or `cli`). `discover` and `list_models` show the live topology grouped by tier (`local:` / `cli:`) plus a plain-language summary of the active rules, so a caller can see exactly how an un-annotated call would route.
+
+To exercise routing against real backends end-to-end, see [Part 2 of `SHAKEDOWN.md`](./SHAKEDOWN.md) (`npm run shakedown:cli`).
 
 ## Compatible endpoints
 

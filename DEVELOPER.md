@@ -14,13 +14,24 @@ src/
                       provider-profile registry
   model-cache.ts      SQLite (sql.js / WASM) — model profiles, thinking-
                       support detection, per-model performance history
+  types.ts            Shared backend types (InferenceBackend, ChatOptions, ModelInfo, Tier)
+  backends/
+    router.ts         Tiered Router (InferenceBackend) — override→tier→rules
+    routing-config.ts Escalation-rule parse/eval + describeRules + defaults
+    cli/              CLI-delegation backend (codex/claude/llm/custom wrappers)
+      index.ts        CliBackend — pool dispatch, failover, heartbeat
+      pool.ts         Profile pool — capability/role scoring, tieBreak, cooldown
+      profiles.ts     Pool-config parse/validate (CliProfile / CliConfig)
+      activation.ts   Backend gating + override resolution
+      adapters/       Per-provider argv + output parsing
 server.json           MCP registry manifest
 test.mjs              Direct-client integration tests (hits /v1 endpoints)
 test-mcp-e2e.mjs      End-to-end MCP harness — spawns the built server over
                       stdio, drives real tool calls, verifies provider paths
 benchmark.mjs         Throughput + savings benchmark
-shakedown.mjs         End-to-end self-test — runs all 7 tools in sequence
-SHAKEDOWN.md          Canonical test prompt (for running via Claude chat)
+shakedown.mjs         End-to-end self-test (local) — runs all 7 tools in sequence
+shakedown-cli.mjs     End-to-end routing self-test — server in router mode (npm run shakedown:cli)
+SHAKEDOWN.md          Canonical test prompt — Part 1 local, Part 2 routing
 add-shebang.mjs       Post-build — prepends #!/usr/bin/env node to dist/index.js
 ```
 
@@ -241,6 +252,22 @@ the side of letting the call run.
 4. Use `formatFooter(resp, extraLabel)` to produce the standard footer;
    `recordUsage` runs inside it and writes to both session and lifetime
    mirrors.
+
+## Inference backends & tiered routing
+
+Inference is abstracted behind an `InferenceBackend` interface (`src/types.ts`): `chat()`, `listModels()`, optional `embed()`. Three implementations:
+
+- **local** — a thin adapter (`localBackend` in `index.ts`) over the existing inline `/v1` path; *not* a separate file. `chat` → `chatCompletionStreamingInner`, `listModels` → `listLocalModelsRaw`, `embed` → `localEmbed`. Keeping the local path inline minimises the diff against upstream.
+- **CLI** — `CliBackend` (`src/backends/cli/`): a pool of locally-installed AI CLIs (codex/claude/llm/custom) run read-only, single-response.
+- **router** — `Router` (`src/backends/router.ts`) holds `{ local, cli }` and picks per call.
+
+`initBackend()` selects one based on `HOUTINI_LM_BACKEND` and stores it in the module-level `activeBackend` (`null` = the unchanged inline local path). The three seams — `chatCompletionStreaming`, `listModelsRaw`, and the `embed` handler — delegate to `activeBackend` when set, else fall through to the inline path. That keeps the baseline `index.ts` diff to a few generic hooks rather than a rewrite.
+
+**`Router.routeTier(messages, options)`** is the single source of routing truth — pure, no dispatch: exact `model`/`HOUTINI_LM_PROFILE` override → `embed` is always local → caller `tier` → `evalEscalate()` rules (`routing-config.ts`) → else local. `chat()` calls it then dispatches; `code_task_files` calls it to skip the local prefill-timeout pre-flight when the call will route to CLI.
+
+**`listModelsRaw` vs `listLocalModelsRaw`** — `listModelsRaw()` returns the *merged* (local + CLI) list when `activeBackend` is set (discovery wants the full topology); `listLocalModelsRaw()` is the local-only probe used by `localBackend.listModels`, `routeToModel`, and `getActiveModel`. Keep them separate: routing the local adapter back through `listModelsRaw` re-enters `Router.listModels` and recurses.
+
+CLI pool selection, config schema, and the escalation-rule format are documented in the [README](README.md#cli-delegation-backend); the design rationale is in [`docs/specs/2026-06-23-tiered-routing-design.md`](docs/specs/2026-06-23-tiered-routing-design.md). Unit suites live in `test/` (`npm run test:unit`); `shakedown-cli.mjs` (`npm run shakedown:cli`) is the live routing self-test.
 
 ## Adding a new backend
 
