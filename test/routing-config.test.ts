@@ -31,3 +31,25 @@ test('parse rejects bad default / non-array rules', () => {
   assert.throws(() => parseRoutingConfig({ escalateToCliWhen: {}, default: 'local' }), /escalateToCliWhen/);
 });
 test('describeRules is readable', () => { assert.match(describeRules(DEFAULT_ROUTING_CONFIG), /code_task_files/); });
+test('OR across rules: a signal matching only the second rule escalates', () => {
+  const cfg = parseRoutingConfig({ escalateToCliWhen: [
+    { taskType: 'code', minInputChars: 100 },
+    { tool: 'code_task_files', minFiles: 2 },
+  ], default: 'local' });
+  // matches only rule 2:
+  assert.equal(evalEscalate(cfg, sig({ tool: 'code_task_files', fileCount: 2 })), true);
+  // matches neither:
+  assert.equal(evalEscalate(cfg, sig({ tool: 'chat', taskType: 'chat', inputChars: 50, fileCount: 1 })), false);
+  // matches only rule 1:
+  assert.equal(evalEscalate(cfg, sig({ taskType: 'code', inputChars: 100 })), true);
+});
+test('parse rejects non-object top level (incl. array)', () => {
+  assert.throws(() => parseRoutingConfig([]), /must be an object/);
+  assert.throws(() => parseRoutingConfig('x'), /must be an object/);
+});
+test('parse rejects bad taskType / non-number numeric / non-string tool', () => {
+  assert.throws(() => parseRoutingConfig({ escalateToCliWhen: [{ taskType: 'bogus' }], default: 'local' }), /taskType/);
+  assert.throws(() => parseRoutingConfig({ escalateToCliWhen: [{ minInputChars: 'big' }], default: 'local' }), /minInputChars/);
+  assert.throws(() => parseRoutingConfig({ escalateToCliWhen: [{ tool: 123 }], default: 'local' }), /tool/);
+  assert.throws(() => parseRoutingConfig({ escalateToCliWhen: [42], default: 'local' }), /must be an object/);
+});

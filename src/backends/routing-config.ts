@@ -19,7 +19,7 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
 };
 
 export function parseRoutingConfig(raw: unknown): RoutingConfig {
-  if (!raw || typeof raw !== 'object') throw new Error('routing config must be an object');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('routing config must be an object');
   const o = raw as Record<string, unknown>;
   if (!Array.isArray(o.escalateToCliWhen)) throw new Error('routing config: "escalateToCliWhen" must be an array');
   if (o.default !== 'local' && o.default !== 'cli') throw new Error('routing config: "default" must be "local" or "cli"');
@@ -55,6 +55,7 @@ export function evalEscalate(config: RoutingConfig, signals: RoutingSignals): bo
 }
 
 export function describeRules(config: RoutingConfig): string {
+  if (config.escalateToCliWhen.length === 0) return `defaults → CLI for: (no escalation rules); else ${config.default}`;
   const parts = config.escalateToCliWhen.map((r) => {
     const c: string[] = [];
     if (r.tool) c.push(`tool=${r.tool}`);
