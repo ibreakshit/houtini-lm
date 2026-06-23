@@ -50,10 +50,10 @@ A default rule set does double duty: the **fallback** when the caller doesn't ro
 ```jsonc
 {
   "escalateToCliWhen": [
-    { "taskType": "analysis", "minInputChars": 16000 },
-    { "tool": "code_task_files", "minFiles": 3 },
-    { "minInputChars": 32000 },                        // ~8k tokens of input
-    { "taskType": "code", "minInputChars": 16000 }
+    { "tool": "code_task_files", "minFiles": 2 },        // cross-file reasoning is a PROVEN local hole — hallucinated on a 2-file review (2026-06-21 shakedown)
+    { "minInputChars": 28000 },                          // ~7k tok: stay under the ~8k-tok / 60s code_task_files timeout cliff
+    { "taskType": "analysis", "minInputChars": 12000 },  // deep/long analysis; small explainers stay local
+    { "taskType": "code", "minInputChars": 16000 }       // large code tasks
   ],
   "default": "local"
 }
@@ -61,7 +61,7 @@ A default rule set does double duty: the **fallback** when the caller doesn't ro
 - Escalates if **any** rule matches (OR across rules; AND within a rule).
 - **Signals** (deterministic, pre-inference; sourced from `ChatOptions` — see §4): `taskType` (`chat|code|analysis|embedding`), `tool` (the 5 tools), `minInputChars`/`minInputTokens` (assembled prompt+context size; token = chars/4 estimate), `minFiles` (`code_task_files` path count).
 - **`embed` never escalates** — the CLI backend has no embeddings; embed is always local. A `tier:"cli"` on embed is ignored.
-- These thresholds are **starting guesses, tuned from observed misroutes** (lower the bar when local underperforms; raise it when the CLI is wasted on trivial work). Honest limitation: a *small-but-hard* task goes local unless the caller routes it explicitly — the rules can't catch that.
+- Defaults are **grounded in the 2026-06-21 gpt-oss-120b shakedown** (`houtini-lm-usage.md`): cross-file review and inputs over ~8k tok are *proven* local failures (the multi-file review hallucinated two findings; large inputs hit the 60s timeout), while single-function review, test stubs, explainers, and reformatting are *proven* local wins — those stay local. Tune from observed misroutes. **No `max_tokens` rule:** gpt-oss's default output cap is ~25% of its 65k context (~16k tok), so `max_tokens` is almost always the default, not a real "big output" signal. Honest limitation: a *small-but-hard* task goes local unless the caller routes it explicitly — the rules can't catch that (→ caller-declared, §3.5).
 
 ### 3.4 CLI tier selection (goal #5)
 `CliPool` selection order:
@@ -73,9 +73,10 @@ New config: `tieBreak: "first-loaded" | "round-robin"` (pool-level, default `fir
 
 ### 3.5 Routing transparency & caller control (the heart of the caller-primary model)
 For the caller to route well, it must see the menu and the defaults:
-- **`discover` / `list_models` report the full topology** — every model/profile tagged with its **backend + tier** (`local` vs `cli`), grouped (`local: […]`, `cli: […]`), **plus a plain-language summary of the active fallback rules** (e.g. *"defaults → CLI for: analysis ≥16KB · code_task_files ≥3 files · any input ≥32KB; else local"*). So the caller can read one `discover` call and know exactly what's available and how an un-annotated call would route.
+- **`discover` / `list_models` report the full topology** — every model/profile tagged with its **backend + tier** (`local` vs `cli`), grouped (`local: […]`, `cli: […]`), **plus a plain-language summary of the active fallback rules** (e.g. *"defaults → CLI for: code_task_files ≥2 files · any input ≥28KB · analysis ≥12KB · code ≥16KB; else local"*). So the caller can read one `discover` call and know exactly what's available and how an un-annotated call would route.
 - **Tools gain a `tier` param** (`"local"|"cli"`) — the coarse caller lever (use the powerful tier without naming a profile). The existing `model` param stays the exact lever.
 - **Tool descriptions** note: consult `discover` for tiers; pass `tier`/`model` to route explicitly; otherwise the default rules apply.
+- **Caller guidance, surfaced in `discover`** (grounded in `houtini-lm-usage.md`): *"Escalate with `tier:\"cli\"` for correctness-critical reasoning, subtle-bug hunts, whole-module generation, or current/niche-knowledge tasks — these have no size signal, so the default rules won't catch them. Local is fast and reliable for single-function review, test stubs, explainers, and reformatting."*
 
 ### 3.6 Activation & backward compatibility
 - New `HOUTINI_LM_BACKEND=router` enables the registry+router; requires a local endpoint (`HOUTINI_LM_ENDPOINT_URL`) **and** a CLI pool (`HOUTINI_LM_CLI_CONFIG`); `HOUTINI_LM_ROUTING_CONFIG` optional (no rules → fallback is "all local", caller can still route via `tier`/`model`).
