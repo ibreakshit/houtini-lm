@@ -63,6 +63,15 @@ test('tieBreak round-robin rotates by LRU', () => {
   const first = pool.listAvailable('chat')[0].id; pool.markUsed(first); t = 1001;
   assert.notEqual(pool.listAvailable('chat')[0].id, first);         // rotates
 });
+test('omitted tieBreak defaults to first-loaded (no rotation)', () => {
+  const cfg: CliConfig = { profiles: [   // NOTE: no tieBreak field
+    { id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+    { id: 'b', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+  ]};
+  let t = 1000; const pool = new CliPool(cfg, () => t);
+  const first = pool.listAvailable('chat')[0].id; pool.markUsed(first); t = 1001;
+  assert.equal(pool.listAvailable('chat')[0].id, first);   // default = no rotation
+});
 test('explicit role match beats tie-break order', () => {
   const cfg: CliConfig = { tieBreak: 'first-loaded', profiles: [
     { id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },

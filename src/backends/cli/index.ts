@@ -68,7 +68,7 @@ export class CliBackend implements InferenceBackend {
       }
     }
 
-    const candidates = this.pool.listAvailable(taskType, options.taskType);
+    const candidates = this.pool.listAvailable(taskType, taskType);
     if (candidates.length === 0) {
       throw new CliError('error', `No available CLI profiles for task "${taskType}"`);
     }

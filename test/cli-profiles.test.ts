@@ -64,3 +64,17 @@ test('absent capabilities defaults to [] without throwing', () => {
   const cfg = parseCliConfig({ profiles: [{ id: 'a', provider: 'llm', bin: 'llm', model: 'm' }] });
   assert.deepEqual(cfg.profiles[0].capabilities, []);
 });
+test('rejects non-array roles', () => {
+  assert.throws(() => parseCliConfig({ profiles: [{ id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'], roles: 'prose' }] }), /roles/);
+});
+test('rejects non-string role elements', () => {
+  assert.throws(() => parseCliConfig({ profiles: [{ id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'], roles: [1] }] }), /roles/);
+});
+test('accepts valid roles + tieBreak', () => {
+  const cfg = parseCliConfig({ tieBreak: 'round-robin', profiles: [{ id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'], roles: ['prose'] }] });
+  assert.equal(cfg.tieBreak, 'round-robin');
+  assert.deepEqual(cfg.profiles[0].roles, ['prose']);
+});
+test('rejects bad tieBreak', () => {
+  assert.throws(() => parseCliConfig({ tieBreak: 'bogus', profiles: [{ id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] }] }), /tieBreak/);
+});
