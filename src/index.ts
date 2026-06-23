@@ -38,7 +38,7 @@ import { isAbsolute, basename } from 'node:path';
 import { CliBackend } from './backends/cli/index.js';
 import { loadCliConfig } from './backends/cli/profiles.js';
 import { shouldUseCli, resolveOverride } from './backends/cli/activation.js';
-import { Router } from './backends/router.js';
+import { Router, formatRouterTopology } from './backends/router.js';
 import { loadRoutingConfig, DEFAULT_ROUTING_CONFIG } from './backends/routing-config.js';
 
 // Env var naming: HOUTINI_LM_* is the preferred namespace now that we
@@ -80,7 +80,7 @@ async function localEmbed(input: string | string[], model?: string): Promise<Emb
 const localBackend: InferenceBackend = {
   name: 'local',
   chat: (messages, options) => chatCompletionStreamingInner(messages, options),
-  listModels: () => listModelsRaw(),
+  listModels: () => listLocalModelsRaw(),  // local-only — breaks Router→local→Router recursion
   embed: (input, model) => localEmbed(input, model),
 };
 
@@ -684,7 +684,7 @@ async function chatCompletionStreaming(
 /** Get the first loaded model's info for context-aware defaults. */
 async function getActiveModel(): Promise<ModelInfo | null> {
   try {
-    const models = await listModelsRaw();
+    const models = await listLocalModelsRaw();  // local-only — CLI ids have no context window info
     return models.find((m: ModelInfo) => m.state === 'loaded') ?? models[0] ?? null;
   } catch { return null; }
 }
@@ -1119,9 +1119,12 @@ function getProviderProfile(): ProviderProfile {
  *   2. Ollama /api/tags           — native list, sets backend='ollama', maps to ModelInfo
  *   3. OpenAI-compatible /v1/models — generic fallback (DeepSeek, vLLM, llama.cpp, OpenRouter)
  */
-async function listModelsRaw(): Promise<ModelInfo[]> {
-  if (activeBackend) return activeBackend.listModels();
-
+/**
+ * Probe the LOCAL endpoint (OpenRouter / LM Studio / Ollama / v1 fallback).
+ * Never calls activeBackend — always hits the wire directly.
+ * This is the source of truth for the Router's local side.
+ */
+async function listLocalModelsRaw(): Promise<ModelInfo[]> {
   // OpenRouter short-circuit — no point probing LM Studio/Ollama-specific
   // endpoints. /v1/models returns richer metadata than our fallback path
   // normally exposes: context_length, architecture.input_modalities, pricing.
@@ -1210,6 +1213,20 @@ async function listModelsRaw(): Promise<ModelInfo[]> {
   const data = (await res.json()) as { data: ModelInfo[] };
   detectedBackend = 'openai-compat';
   return data.data;
+}
+
+/**
+ * Dispatcher: returns the merged (local + cli) list when a Router is active
+ * (for discover / list_models callers that want everything), or falls back to
+ * local-only probing when running in plain local/cli mode.
+ *
+ * DO NOT use this as the source for routeToModel / getActiveModel / localBackend.listModels —
+ * those callers need local-only data; use listLocalModelsRaw() there to avoid
+ * infinite recursion through Router → local → Router.
+ */
+async function listModelsRaw(): Promise<ModelInfo[]> {
+  if (activeBackend) return activeBackend.listModels();   // merged (local+cli) for discovery
+  return listLocalModelsRaw();
 }
 
 function getContextLength(model: ModelInfo): number {
@@ -1362,7 +1379,7 @@ async function routeToModel(taskType: TaskType, override?: string): Promise<Rout
 
   let models: ModelInfo[];
   try {
-    models = await listModelsRaw();
+    models = await listLocalModelsRaw();  // local-only — prevents CLI ids from leaking into local scoring
   } catch {
     // Can't reach server — fall back to default (empty string; caller handles)
     const hints = getPromptHints(LM_MODEL);
@@ -2069,48 +2086,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const combined = sections.join('\n\n');
 
-        // Pre-flight prefill estimate. Huge inputs can legitimately exceed
-        // the MCP client's ~60s request timeout during prompt processing, and
-        // progress notifications don't reset that timeout on Claude Desktop.
-        // If measured per-model data in the SQLite cache shows this input
-        // would obviously overrun, refuse with a concrete diagnostic so the
-        // caller knows to split or trim instead of waiting for a silent hang.
-        //
-        // Preferred method: linear fit `TTFT ≈ α + β·prompt_tokens` over the
-        // most recent PREFILL_SAMPLES_PER_MODEL (prompt_tokens, TTFT_ms) pairs.
-        // Separates fixed per-request overhead from per-token prefill cost and
-        // avoids the under-prediction a ratio-of-averages produces on inputs
-        // much larger than the historical mean.
-        const estimate = await estimatePrefill(combined.length, route.modelId);
-        const isConfidentEstimate = estimate.basis === 'linear-fit' || estimate.basis === 'ratio';
-        if (isConfidentEstimate && estimate.estimatedSeconds > PREFILL_REFUSE_THRESHOLD_SEC) {
-          const estSec = Math.round(estimate.estimatedSeconds);
-          const basisLine = estimate.basis === 'linear-fit'
-            ? `• Estimator: linear fit — TTFT ≈ ${Math.round(estimate.fit!.alphaMs)}ms + ${estimate.fit!.betaMsPerToken.toFixed(2)}ms/token (n=${estimate.fit!.n}, R²=${estimate.fit!.r2.toFixed(2)})`
-            : `• Estimator: ratio fallback — ~${Math.round(estimate.prefillTokPerSec!)} tok/s (from ${lifetime.modelStats.get(route.modelId)?.ttftCalls ?? 0} prior calls; less accurate for inputs far from the historical mean)`;
-          return {
-            content: [{
-              type: 'text',
-              text:
-                `Error: estimated prefill time exceeds the ~60s MCP client timeout.\n\n` +
-                `• Input size: ~${estimate.inputTokens.toLocaleString()} tokens across ${successCount} file(s)\n` +
-                `${basisLine}\n` +
-                `• Estimated prefill: ~${estSec}s (threshold: ${PREFILL_REFUSE_THRESHOLD_SEC}s)\n\n` +
-                `Options: split the files into smaller groups, trim the largest file, or use \`code_task\` with a focused excerpt. ` +
-                `If you know this workstation can handle it, pass fewer files or run the task again when the measured rate improves.`,
-            }],
-            isError: true,
-          };
-        }
-        if (estimate.estimatedSeconds > PREFILL_WARN_THRESHOLD_SEC) {
-          const basisDetail = estimate.basis === 'linear-fit'
-            ? `linear-fit n=${estimate.fit!.n} R²=${estimate.fit!.r2.toFixed(2)}`
-            : estimate.basis;
-          process.stderr.write(
-            `[houtini-lm] Large input warning: ~${estimate.inputTokens} tokens, est prefill ~${Math.round(estimate.estimatedSeconds)}s (${basisDetail}). Proceeding.\n`,
-          );
-        }
-
+        // Build messages and chat options up-front so we can ask the Router
+        // which tier will handle this call BEFORE running the local preflight.
+        // CLI-bound tasks have no local prefill bottleneck, so refusing them
+        // on a local TTFT estimate is both wrong and confusing.
         const codeMessages: ChatMessage[] = [
           {
             role: 'system',
@@ -2121,10 +2100,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: `\`\`\`${lang}\n${combined}\n\`\`\``,
           },
         ];
-
         // Pass codeMaxTokens raw (not `?? DEFAULT_MAX_TOKENS`) so the 25%-of-context
         // auto-derivation in chatCompletionStreamingInner fires when the caller omits it.
-        const codeResp = await chatCompletionStreaming(codeMessages, {
+        const chatOpts: ChatOptions & { progressToken?: string | number } = {
           temperature: route.hints.codeTemp,
           maxTokens: codeMaxTokens,
           model: route.modelId,
@@ -2134,7 +2112,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tier,
           tool: 'code_task_files',
           fileCount: paths.length,
-        });
+        };
+
+        // Determine whether this call will be CLI-routed (router mode only).
+        // If it will, skip the local prefill estimate — CLI backends are not
+        // constrained by the local MCP TTFT budget.
+        const willUseCli = activeBackend instanceof Router && activeBackend.routeTier(codeMessages, chatOpts) === 'cli';
+
+        if (!willUseCli) {
+          // Pre-flight prefill estimate. Huge inputs can legitimately exceed
+          // the MCP client's ~60s request timeout during prompt processing, and
+          // progress notifications don't reset that timeout on Claude Desktop.
+          // If measured per-model data in the SQLite cache shows this input
+          // would obviously overrun, refuse with a concrete diagnostic so the
+          // caller knows to split or trim instead of waiting for a silent hang.
+          //
+          // Preferred method: linear fit `TTFT ≈ α + β·prompt_tokens` over the
+          // most recent PREFILL_SAMPLES_PER_MODEL (prompt_tokens, TTFT_ms) pairs.
+          // Separates fixed per-request overhead from per-token prefill cost and
+          // avoids the under-prediction a ratio-of-averages produces on inputs
+          // much larger than the historical mean.
+          const estimate = await estimatePrefill(combined.length, route.modelId);
+          const isConfidentEstimate = estimate.basis === 'linear-fit' || estimate.basis === 'ratio';
+          if (isConfidentEstimate && estimate.estimatedSeconds > PREFILL_REFUSE_THRESHOLD_SEC) {
+            const estSec = Math.round(estimate.estimatedSeconds);
+            const basisLine = estimate.basis === 'linear-fit'
+              ? `• Estimator: linear fit — TTFT ≈ ${Math.round(estimate.fit!.alphaMs)}ms + ${estimate.fit!.betaMsPerToken.toFixed(2)}ms/token (n=${estimate.fit!.n}, R²=${estimate.fit!.r2.toFixed(2)})`
+              : `• Estimator: ratio fallback — ~${Math.round(estimate.prefillTokPerSec!)} tok/s (from ${lifetime.modelStats.get(route.modelId)?.ttftCalls ?? 0} prior calls; less accurate for inputs far from the historical mean)`;
+            return {
+              content: [{
+                type: 'text',
+                text:
+                  `Error: estimated prefill time exceeds the ~60s MCP client timeout.\n\n` +
+                  `• Input size: ~${estimate.inputTokens.toLocaleString()} tokens across ${successCount} file(s)\n` +
+                  `${basisLine}\n` +
+                  `• Estimated prefill: ~${estSec}s (threshold: ${PREFILL_REFUSE_THRESHOLD_SEC}s)\n\n` +
+                  `Options: split the files into smaller groups, trim the largest file, or use \`code_task\` with a focused excerpt. ` +
+                  `If you know this workstation can handle it, pass fewer files or run the task again when the measured rate improves.`,
+              }],
+              isError: true,
+            };
+          }
+          if (estimate.estimatedSeconds > PREFILL_WARN_THRESHOLD_SEC) {
+            const basisDetail = estimate.basis === 'linear-fit'
+              ? `linear-fit n=${estimate.fit!.n} R²=${estimate.fit!.r2.toFixed(2)}`
+              : estimate.basis;
+            process.stderr.write(
+              `[houtini-lm] Large input warning: ~${estimate.inputTokens} tokens, est prefill ~${Math.round(estimate.estimatedSeconds)}s (${basisDetail}). Proceeding.\n`,
+            );
+          }
+        }
+
+        const codeResp = await chatCompletionStreaming(codeMessages, chatOpts);
 
         const readSummary = successCount === paths.length
           ? `${paths.length} file(s) read`
@@ -2274,14 +2303,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         text += `The local LLM is available. You can delegate tasks using chat, custom_prompt, code_task, code_task_files, or embed.`;
 
         if (activeBackend instanceof Router) {
-          const routerModels = await activeBackend.listModels();
-          const byTier = (t: string) => routerModels.filter((m) => (m as { tier?: string }).tier === t).map((m) => m.id);
-          const localIds = byTier('local');
-          const cliIds = byTier('cli');
-          text += `\n\nRouting topology:\n`;
-          text += `  local: ${localIds.length > 0 ? localIds.join(', ') : '(none)'}\n`;
-          text += `  cli: ${cliIds.length > 0 ? cliIds.join(', ') : '(none)'}\n`;
-          text += `\nRouting rules:\n${activeBackend.describeRouting()}`;
+          text += formatRouterTopology(await activeBackend.listModels(), activeBackend.describeRouting());
         }
 
         return { content: [{ type: 'text', text }] };
@@ -2311,15 +2333,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (activeBackend instanceof Router) {
-          const routerModels = await activeBackend.listModels();
-          const byTier = (t: string) => routerModels.filter((m) => (m as { tier?: string }).tier === t).map((m) => m.id);
-          const localIds = byTier('local');
-          const cliIds = byTier('cli');
           if (text) text += '\n\n';
-          text += `Routing topology:\n`;
-          text += `  local: ${localIds.length > 0 ? localIds.join(', ') : '(none)'}\n`;
-          text += `  cli: ${cliIds.length > 0 ? cliIds.join(', ') : '(none)'}\n`;
-          text += `\nRouting rules:\n${activeBackend.describeRouting()}`;
+          text += formatRouterTopology(await activeBackend.listModels(), activeBackend.describeRouting()).trimStart();
         }
 
         return { content: [{ type: 'text', text }] };

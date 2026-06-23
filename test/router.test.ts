@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Router } from '../src/backends/router.js';
+import { Router, formatRouterTopology } from '../src/backends/router.js';
 import type { InferenceBackend, ChatMessage, ChatOptions, StreamingResult, ModelInfo } from '../src/types.js';
 function fake(name: string): InferenceBackend {
   return {
@@ -37,4 +37,49 @@ test('embed always local; tier:cli with no cli → local', async () => {
 test('listModels merges + tags tier', async () => {
   const models = await new Router({ local: fake('local'), cli: fake('cli') }, cfg).listModels();
   assert.deepEqual(models.map((m) => [m.id, m.tier]).sort(), [['cli-m', 'cli'], ['local-m', 'local']]);
+});
+
+// ── routeTier tests ─────────────────────────────────────────────────────────
+test('routeTier: large code_task_files signal → cli under default config', () => {
+  const r = new Router({ local: fake('local'), cli: fake('cli') }, cfg);
+  // 3 files + large input chars → escalate rule fires
+  const tier = r.routeTier(msg(200), { tool: 'code_task_files', taskType: 'code', fileCount: 3 });
+  assert.equal(tier, 'cli');
+});
+test('routeTier: small chat signal → local', () => {
+  const r = new Router({ local: fake('local'), cli: fake('cli') }, cfg);
+  assert.equal(r.routeTier(msg(10), { tool: 'chat', taskType: 'chat' }), 'local');
+});
+test('routeTier: tier:cli explicit → cli', () => {
+  const r = new Router({ local: fake('local'), cli: fake('cli') }, cfg);
+  assert.equal(r.routeTier(msg(5), { tier: 'cli' }), 'cli');
+});
+test('routeTier: tier:cli but no CLI → local', () => {
+  const r = new Router({ local: fake('local') }, cfg);
+  assert.equal(r.routeTier(msg(9999), { tier: 'cli' }), 'local');
+});
+
+// ── formatRouterTopology tests ───────────────────────────────────────────────
+test('formatRouterTopology: groups by tier, all ids present', () => {
+  const models: ModelInfo[] = [
+    { id: 'local-a', tier: 'local' },
+    { id: 'local-b', tier: 'local' },
+    { id: 'cli-x', tier: 'cli' },
+  ];
+  const out = formatRouterTopology(models, 'rules here');
+  assert.ok(out.includes('local: local-a, local-b'), `missing local ids: ${out}`);
+  assert.ok(out.includes('cli: cli-x'), `missing cli id: ${out}`);
+  assert.ok(out.includes('rules here'), `missing routing summary: ${out}`);
+});
+test('formatRouterTopology: empty cli tier renders without ragged line', () => {
+  const models: ModelInfo[] = [{ id: 'local-only', tier: 'local' }];
+  const out = formatRouterTopology(models, 'summary');
+  assert.ok(out.includes('cli: (none)'), `should show (none) for empty cli: ${out}`);
+  assert.ok(out.includes('local: local-only'), `missing local id: ${out}`);
+});
+test('formatRouterTopology: routing summary is included verbatim', () => {
+  const models: ModelInfo[] = [{ id: 'x', tier: 'local' }];
+  const summary = 'escalate when fileCount >= 3 AND inputChars >= 4000\nCaller guidance line';
+  const out = formatRouterTopology(models, summary);
+  assert.ok(out.includes(summary), `summary not in output: ${out}`);
 });
