@@ -12,6 +12,7 @@
     "build": "tsc && node add-shebang.mjs",
     "dev": "tsc --watch",
     "shakedown": "node shakedown.mjs",
+    "shakedown:cli": "node shakedown-cli.mjs",
     "prepublishOnly": "npm run build",
     "test:unit": "tsx --test test/*.test.ts"
   },
