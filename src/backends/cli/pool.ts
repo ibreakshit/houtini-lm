@@ -30,13 +30,19 @@ export class CliPool {
     const s = this.states.get(p.id)!;
     return !s.authBlocked && s.cooldownUntil <= now && s.inFlight < (p.concurrency ?? 1);
   }
-  listAvailable(taskType: TaskType): CliProfile[] {
+  listAvailable(taskType: TaskType, role?: string): CliProfile[] {
     const now = this.now();
+    const tieBreak = this.config.tieBreak ?? 'first-loaded';
+    const index = new Map(this.config.profiles.map((p, i) => [p.id, i]));
+    const roleScore = (p: CliProfile) => (role && p.roles?.includes(role) ? 1 : 0);
     return this.config.profiles
       .filter((p) => this.isAvailable(p, now) && scoreProfileForTask(p, taskType) > 0)
       .sort((a, b) =>
-        scoreProfileForTask(b, taskType) - scoreProfileForTask(a, taskType)
-        || this.states.get(a.id)!.lastUsedAt - this.states.get(b.id)!.lastUsedAt);
+        roleScore(b) - roleScore(a)
+        || scoreProfileForTask(b, taskType) - scoreProfileForTask(a, taskType)
+        || (tieBreak === 'round-robin'
+              ? this.states.get(a.id)!.lastUsedAt - this.states.get(b.id)!.lastUsedAt
+              : index.get(a.id)! - index.get(b.id)!));     // first-loaded = config order
   }
   acquire(id: string): void { const s = this.states.get(id); if (s) s.inFlight++; }
   release(id: string): void { const s = this.states.get(id); if (s && s.inFlight > 0) s.inFlight--; }

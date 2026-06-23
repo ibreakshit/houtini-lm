@@ -10,8 +10,9 @@ export interface CliProfile {
   configHome?: string; capabilities: TaskType[]; contextWindow?: number;
   concurrency?: number; weight?: number; enabled?: boolean;
   argvTemplate?: string[]; promptVia?: 'stdin' | 'arg'; parse?: 'text' | 'json'; jsonPath?: string;
+  roles?: string[];
 }
-export interface CliConfig { profiles: CliProfile[]; defaults?: { timeoutMs?: number; cooldownMs?: number }; }
+export interface CliConfig { profiles: CliProfile[]; defaults?: { timeoutMs?: number; cooldownMs?: number }; tieBreak?: 'first-loaded' | 'round-robin'; }
 
 export function parseCliConfig(raw: unknown): CliConfig {
   if (!raw || typeof raw !== 'object') throw new Error('CLI config must be an object');
@@ -46,6 +47,11 @@ export function parseCliConfig(raw: unknown): CliConfig {
       if (!Array.isArray(r.argvTemplate) || (r.argvTemplate as unknown[]).some(el => typeof el !== 'string'))
         throw new Error(`${where}: "argvTemplate" must be an array of strings`);
     }
+    // roles: if present must be string[]
+    if ('roles' in r) {
+      if (!Array.isArray(r.roles) || (r.roles as unknown[]).some(el => typeof el !== 'string'))
+        throw new Error(`${where}: "roles" must be an array of strings`);
+    }
     return {
       id: r.id, provider: r.provider as Provider, bin: r.bin, model: r.model,
       configHome: typeof r.configHome === 'string' ? r.configHome : undefined,
@@ -58,6 +64,7 @@ export function parseCliConfig(raw: unknown): CliConfig {
       promptVia: r.promptVia === 'arg' ? 'arg' : r.promptVia === 'stdin' ? 'stdin' : undefined,
       parse: r.parse === 'json' ? 'json' : r.parse === 'text' ? 'text' : undefined,
       jsonPath: typeof r.jsonPath === 'string' ? r.jsonPath : undefined,
+      roles: Array.isArray(r.roles) ? (r.roles as string[]) : undefined,
     };
   });
   // defaults numeric fields: if present with wrong type → throw
@@ -66,8 +73,12 @@ export function parseCliConfig(raw: unknown): CliConfig {
     if ('timeoutMs' in d && typeof d.timeoutMs !== 'number') throw new Error('"defaults.timeoutMs" must be a number');
     if ('cooldownMs' in d && typeof d.cooldownMs !== 'number') throw new Error('"defaults.cooldownMs" must be a number');
   }
+  // tieBreak: if present must be a valid value
+  if ('tieBreak' in obj && obj.tieBreak !== 'first-loaded' && obj.tieBreak !== 'round-robin')
+    throw new Error(`"tieBreak" must be "first-loaded" or "round-robin"`);
   const defaults = (obj.defaults && typeof obj.defaults === 'object') ? obj.defaults as CliConfig['defaults'] : undefined;
-  return { profiles, defaults };
+  const tieBreak = (obj.tieBreak === 'first-loaded' || obj.tieBreak === 'round-robin') ? obj.tieBreak : undefined;
+  return { profiles, defaults, tieBreak };
 }
 
 export async function loadCliConfig(path: string): Promise<CliConfig> {

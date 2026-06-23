@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { CliPool, scoreProfileForTask } from '../src/backends/cli/pool.js';
 import type { CliConfig } from '../src/backends/cli/profiles.js';
 
-const cfg: CliConfig = { profiles: [
+const cfg: CliConfig = { tieBreak: 'round-robin', profiles: [
   { id: 'codex-a', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code'], concurrency: 1 },
   { id: 'codex-b', provider: 'codex', bin: 'codex', model: 'gpt-5.4-codex', capabilities: ['code'], concurrency: 1 },
   { id: 'claude-big', provider: 'claude', bin: 'claude', model: 'claude-3-5-sonnet', capabilities: ['analysis'], contextWindow: 1_000_000 },
@@ -43,4 +43,31 @@ test('concurrency cap excludes in-flight profiles', () => {
   assert.deepEqual(pool.listAvailable('code'), []);
   pool.release('codex-a');
   assert.deepEqual(pool.listAvailable('code').map(p => p.id), ['codex-a']);
+});
+
+test('tieBreak first-loaded keeps config order (no rotation)', () => {
+  const cfg: CliConfig = { tieBreak: 'first-loaded', profiles: [
+    { id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+    { id: 'b', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+  ]};
+  let t = 1000; const pool = new CliPool(cfg, () => t);
+  const first = pool.listAvailable('chat')[0].id; pool.markUsed(first); t = 1001;
+  assert.equal(pool.listAvailable('chat')[0].id, first);            // does NOT rotate
+});
+test('tieBreak round-robin rotates by LRU', () => {
+  const cfg: CliConfig = { tieBreak: 'round-robin', profiles: [
+    { id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+    { id: 'b', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+  ]};
+  let t = 1000; const pool = new CliPool(cfg, () => t);
+  const first = pool.listAvailable('chat')[0].id; pool.markUsed(first); t = 1001;
+  assert.notEqual(pool.listAvailable('chat')[0].id, first);         // rotates
+});
+test('explicit role match beats tie-break order', () => {
+  const cfg: CliConfig = { tieBreak: 'first-loaded', profiles: [
+    { id: 'a', provider: 'codex', bin: 'codex', model: 'm', capabilities: ['chat'] },
+    { id: 'b', provider: 'claude', bin: 'claude', model: 'm', capabilities: ['chat'], roles: ['analysis'] },
+  ]};
+  const pool = new CliPool(cfg, () => 1000);
+  assert.equal(pool.listAvailable('chat', 'analysis')[0].id, 'b');  // role wins
 });

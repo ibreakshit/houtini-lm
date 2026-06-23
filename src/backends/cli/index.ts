@@ -44,6 +44,8 @@ export class CliBackend implements InferenceBackend {
     this.timeoutMs = deps.timeoutMs ?? config.defaults?.timeoutMs ?? 180_000;
   }
 
+  hasProfile(id: string): boolean { return this.pool.get(id) !== undefined; }
+
   async listModels(): Promise<ModelInfo[]> {
     return this.pool.toModelInfos();
   }
@@ -66,7 +68,7 @@ export class CliBackend implements InferenceBackend {
       }
     }
 
-    const candidates = this.pool.listAvailable(taskType);
+    const candidates = this.pool.listAvailable(taskType, options.taskType);
     if (candidates.length === 0) {
       throw new CliError('error', `No available CLI profiles for task "${taskType}"`);
     }
