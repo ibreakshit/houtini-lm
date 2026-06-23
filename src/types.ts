@@ -66,6 +66,8 @@ export interface ModelInfo {
 
 export type TaskType = 'code' | 'chat' | 'analysis' | 'embedding';
 
+export type Tier = 'local' | 'cli';
+
 export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
@@ -75,6 +77,9 @@ export interface ChatOptions {
   taskType?: TaskType;          // drives CLI pool capability scoring
   overridden?: boolean;         // true when model came from an explicit user override (D6)
   onProgress?: (message: string) => void;
+  tier?: Tier;            // caller routing directive (router mode only)
+  tool?: string;          // originating tool name, for routing rules
+  fileCount?: number;     // code_task_files path count, for routing rules
 }
 
 export interface EmbedResult {
