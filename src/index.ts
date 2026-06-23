@@ -38,6 +38,8 @@ import { isAbsolute, basename } from 'node:path';
 import { CliBackend } from './backends/cli/index.js';
 import { loadCliConfig } from './backends/cli/profiles.js';
 import { shouldUseCli, resolveOverride } from './backends/cli/activation.js';
+import { Router } from './backends/router.js';
+import { loadRoutingConfig, DEFAULT_ROUTING_CONFIG } from './backends/routing-config.js';
 
 // Env var naming: HOUTINI_LM_* is the preferred namespace now that we
 // support more than just LM Studio. The legacy LM_STUDIO_* names remain
@@ -46,15 +48,59 @@ const HOUTINI_LM_BACKEND = (process.env.HOUTINI_LM_BACKEND || '').toLowerCase();
 const HOUTINI_LM_CLI_CONFIG = process.env.HOUTINI_LM_CLI_CONFIG || '';
 const HOUTINI_LM_ALERT_WEBHOOK = process.env.HOUTINI_LM_ALERT_WEBHOOK || '';
 const HOUTINI_LM_PROFILE = process.env.HOUTINI_LM_PROFILE || '';
+const HOUTINI_LM_ROUTING_CONFIG = process.env.HOUTINI_LM_ROUTING_CONFIG || '';
 let cliBackend: CliBackend | null = null;
+let activeBackend: InferenceBackend | null = null;
+
+async function localEmbed(input: string | string[], model?: string): Promise<EmbedResult> {
+  const embedBody: Record<string, unknown> = { input };
+  if (model) {
+    embedBody.model = model;
+  }
+
+  const res = await fetchWithTimeout(
+    `${LM_BASE_URL}/v1/embeddings`,
+    { method: 'POST', headers: apiHeaders(), body: JSON.stringify(embedBody) },
+    INFERENCE_CONNECT_TIMEOUT_MS,
+  );
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Embeddings API error ${res.status}: ${errText}`);
+  }
+
+  const data = (await res.json()) as EmbedResult & {
+    data: { embedding: number[]; index: number }[];
+  };
+
+  if (!data.data[0]?.embedding) throw new Error('No embedding returned');
+  return { model: data.model, data: data.data, usage: data.usage };
+}
+
+const localBackend: InferenceBackend = {
+  name: 'local',
+  chat: (messages, options) => chatCompletionStreamingInner(messages, options),
+  listModels: () => listModelsRaw(),
+  embed: (input, model) => localEmbed(input, model),
+};
 
 async function initBackend(): Promise<void> {
+  if (HOUTINI_LM_BACKEND === 'router') {
+    if (!HOUTINI_LM_CLI_CONFIG) throw new Error('HOUTINI_LM_BACKEND=router requires HOUTINI_LM_CLI_CONFIG');
+    const cfg = await loadCliConfig(HOUTINI_LM_CLI_CONFIG);
+    cliBackend = new CliBackend(cfg, { alertWebhook: HOUTINI_LM_ALERT_WEBHOOK || undefined });
+    const routing = HOUTINI_LM_ROUTING_CONFIG ? await loadRoutingConfig(HOUTINI_LM_ROUTING_CONFIG) : DEFAULT_ROUTING_CONFIG;
+    activeBackend = new Router({ local: localBackend, cli: cliBackend, cliHasProfile: (id) => cliBackend!.hasProfile(id) }, routing);
+    process.stderr.write(`[houtini-lm] router active: local + cli (${cfg.profiles.length} profile(s))\n`);
+    return;
+  }
   if (!shouldUseCli(HOUTINI_LM_BACKEND, HOUTINI_LM_CLI_CONFIG)) return;   // unset/openai-compat → OpenAI, even if a config exists
   if (!HOUTINI_LM_CLI_CONFIG) {
     throw new Error('HOUTINI_LM_BACKEND=cli requires HOUTINI_LM_CLI_CONFIG to be set');
   }
   const cfg = await loadCliConfig(HOUTINI_LM_CLI_CONFIG);
   cliBackend = new CliBackend(cfg, { alertWebhook: HOUTINI_LM_ALERT_WEBHOOK || undefined });
+  activeBackend = cliBackend;
   process.stderr.write(`[houtini-lm] CLI backend active: ${cfg.profiles.length} profile(s)\n`);
 }
 
@@ -614,8 +660,11 @@ async function chatCompletionStreaming(
   messages: ChatMessage[],
   options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
 ): Promise<StreamingResult> {
-  // CLI backend manages its own per-profile concurrency; the global single-model lock would needlessly serialize across profiles.
-  if (cliBackend) return chatCompletionStreamingInner(messages, options);
+  if (activeBackend) {
+    if (options.progressToken === undefined) return activeBackend.chat(messages, options);
+    const hb = setInterval(() => { try { server.notification({ method: 'notifications/progress', params: { progressToken: options.progressToken, progress: 0, message: 'Working…' } }); } catch { /* best-effort */ } }, PREFILL_KEEPALIVE_MS);
+    try { return await activeBackend.chat(messages, options); } finally { clearInterval(hb); }
+  }
   return withInferenceLock(() => chatCompletionStreamingInner(messages, options));
 }
 
@@ -631,34 +680,6 @@ async function chatCompletionStreamingInner(
   messages: ChatMessage[],
   options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
 ): Promise<StreamingResult> {
-  // CLI backend branch — early-return with heartbeat to keep the MCP client alive
-  if (cliBackend) {
-    let hbSeq = 0;
-    const sendCliProgress = (msg: string) => {
-      if (options.progressToken === undefined) return;
-      hbSeq++;
-      server.notification({
-        method: 'notifications/progress',
-        params: { progressToken: options.progressToken, progress: hbSeq, message: msg },
-      }).catch(() => { /* best-effort */ });
-    };
-    sendCliProgress('CLI backend: running...');
-    const hb = setInterval(() => sendCliProgress('CLI backend: waiting for response...'), PREFILL_KEEPALIVE_MS);
-    try {
-      return await cliBackend.chat(messages, {
-        temperature: options.temperature,
-        maxTokens: options.maxTokens,
-        model: options.model,
-        responseFormat: options.responseFormat,
-        progressToken: options.progressToken,
-        taskType: options.taskType,
-        overridden: options.overridden,
-      });
-    } finally {
-      clearInterval(hb);
-    }
-  }
-
   // Resolve active model once — we use it for both context-aware max_tokens
   // and for auto-injecting the model field when the caller didn't specify one.
   // Ollama returns HTTP 400 ("model is required") if the field is absent;
@@ -1086,7 +1107,7 @@ function getProviderProfile(): ProviderProfile {
  *   3. OpenAI-compatible /v1/models — generic fallback (DeepSeek, vLLM, llama.cpp, OpenRouter)
  */
 async function listModelsRaw(): Promise<ModelInfo[]> {
-  if (cliBackend) return cliBackend.listModels();
+  if (activeBackend) return activeBackend.listModels();
 
   // OpenRouter short-circuit — no point probing LM Studio/Ollama-specific
   // endpoints. /v1/models returns richer metadata than our fallback path
@@ -2252,53 +2273,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'embed': {
-        if (cliBackend && !(cliBackend as unknown as InferenceBackend).embed) {
-          return { content: [{ type: 'text', text: 'Embeddings are not available with the CLI backend. Set HOUTINI_LM_EMBED_ENDPOINT or use the OpenAI-compatible backend.' }], isError: true };
-        }
         const { input, model: embedModel } = args as { input: string; model?: string };
-
-        return await withInferenceLock(async () => {
-          const embedBody: Record<string, unknown> = { input };
-          if (embedModel) {
-            embedBody.model = embedModel;
-          }
-
-          const res = await fetchWithTimeout(
-            `${LM_BASE_URL}/v1/embeddings`,
-            { method: 'POST', headers: apiHeaders(), body: JSON.stringify(embedBody) },
-            INFERENCE_CONNECT_TIMEOUT_MS,
-          );
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            throw new Error(`Embeddings API error ${res.status}: ${errText}`);
-          }
-
-          const data = (await res.json()) as {
-            data: { embedding: number[]; index: number }[];
-            model: string;
-            usage?: { prompt_tokens: number; total_tokens: number };
-          };
-
-          const embedding = data.data[0]?.embedding;
-          if (!embedding) throw new Error('No embedding returned');
-
-          const usageInfo = data.usage
-            ? `${data.usage.prompt_tokens} tokens embedded`
-            : '';
-
-          return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                model: data.model,
-                dimensions: embedding.length,
-                embedding,
-                usage: usageInfo,
-              }),
-            }],
-          };
-        });
+        const be = activeBackend ?? localBackend;
+        if (!be.embed) return { content: [{ type: 'text', text: 'Embeddings are not available with this backend.' }], isError: true };
+        const res = await be.embed(input, embedModel);
+        const embedding = res.data[0]?.embedding;
+        if (!embedding) throw new Error('No embedding returned');
+        const usageInfo = res.usage
+          ? `${res.usage.prompt_tokens} tokens embedded`
+          : '';
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              model: res.model,
+              dimensions: embedding.length,
+              embedding,
+              usage: usageInfo,
+            }),
+          }],
+        };
       }
 
       case 'stats': {
