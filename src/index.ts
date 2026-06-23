@@ -661,8 +661,21 @@ async function chatCompletionStreaming(
   options: { temperature?: number; maxTokens?: number; model?: string; responseFormat?: ResponseFormat; progressToken?: string | number; taskType?: TaskType; overridden?: boolean } = {},
 ): Promise<StreamingResult> {
   if (activeBackend) {
+    // Active backends (CLI) are opaque — no token streaming — so emit an immediate
+    // progress notification + monotonic keepalives to keep the MCP client alive.
+    // Preserves the pre-router cli/auto behavior exactly. (Local streaming via the
+    // router sends its own progress; this is a harmless extra keepalive there.)
     if (options.progressToken === undefined) return activeBackend.chat(messages, options);
-    const hb = setInterval(() => { try { server.notification({ method: 'notifications/progress', params: { progressToken: options.progressToken, progress: 0, message: 'Working…' } }); } catch { /* best-effort */ } }, PREFILL_KEEPALIVE_MS);
+    let hbSeq = 0;
+    const beat = (msg: string) => {
+      hbSeq++;
+      server.notification({
+        method: 'notifications/progress',
+        params: { progressToken: options.progressToken, progress: hbSeq, message: msg },
+      }).catch(() => { /* best-effort */ });
+    };
+    beat('CLI backend: running...');
+    const hb = setInterval(() => beat('CLI backend: waiting for response...'), PREFILL_KEEPALIVE_MS);
     try { return await activeBackend.chat(messages, options); } finally { clearInterval(hb); }
   }
   return withInferenceLock(() => chatCompletionStreamingInner(messages, options));
