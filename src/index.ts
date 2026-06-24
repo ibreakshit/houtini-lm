@@ -22,6 +22,8 @@ import {
   getPromptHints,
   getThinkingSupport,
   recordPerformance,
+  recordCall,
+  getUsageSummary,
   getAllPerformance,
   getLifetimeTotals,
   recordPrefillSample,
@@ -186,7 +188,7 @@ async function hydrateLifetimeFromDb(): Promise<void> {
   }
 }
 
-function recordUsage(resp: StreamingResult) {
+function recordUsage(resp: StreamingResult, meta?: { tool?: string }) {
   session.calls++;
   const promptTokens = resp.usage?.prompt_tokens ?? 0;
   let completionTokens = resp.usage?.completion_tokens ?? 0;
@@ -259,6 +261,20 @@ function recordUsage(resp: StreamingResult) {
       reasoningTokens,
     }).catch((err) => {
       process.stderr.write(`[houtini-lm] Performance write failed (continuing): ${err}\n`);
+    });
+
+    recordCall({
+      modelId: resp.model,
+      tier: resp.tier ?? null,
+      tool: meta?.tool ?? null,
+      promptTokens,
+      completionTokens,
+      reasoningTokens,
+      ttftMs: resp.ttftMs,
+      tokPerSec: tokPerSec > 0 ? tokPerSec : undefined,
+      ok: true,
+    }).catch((err) => {
+      process.stderr.write(`[houtini-lm] Call-log write failed (continuing): ${err}\n`);
     });
 
     // Record (prompt_tokens, TTFT) pair for the linear-fit prefill estimator.
@@ -1501,9 +1517,9 @@ function formatQualityLine(quality: QualitySignal): string {
  *   📊 [first-call benchmark line, only on the first measured call per model]
  *   💰 Claude quota saved this session: ...
  */
-function formatFooter(resp: StreamingResult, extra?: string): string {
+function formatFooter(resp: StreamingResult, extra?: string, meta?: { tool?: string }): string {
   // Record usage for session tracking before formatting
-  recordUsage(resp);
+  recordUsage(resp, meta);
 
   const parts: string[] = [];
   if (resp.model) parts.push(`Model: ${resp.model}`);
@@ -1926,7 +1942,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tool: 'chat',
         });
 
-        const footer = formatFooter(resp);
+        const footer = formatFooter(resp, undefined, { tool: 'chat' });
         return { content: [{ type: 'text', text: resp.content + footer }] };
       }
 
@@ -1974,7 +1990,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tool: 'custom_prompt',
         });
 
-        const footer = formatFooter(resp);
+        const footer = formatFooter(resp, undefined, { tool: 'custom_prompt' });
         return {
           content: [{ type: 'text', text: resp.content + footer }],
         };
@@ -2020,7 +2036,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tool: 'code_task',
         });
 
-        const codeFooter = formatFooter(codeResp, lang);
+        const codeFooter = formatFooter(codeResp, lang, { tool: 'code_task' });
         const suggestionLine = route.suggestion ? `\n${route.suggestion}` : '';
         return { content: [{ type: 'text', text: codeResp.content + codeFooter + suggestionLine }] };
       }
@@ -2168,7 +2184,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const readSummary = successCount === paths.length
           ? `${paths.length} file(s) read`
           : `${successCount}/${paths.length} file(s) read`;
-        const codeFooter = formatFooter(codeResp, `${lang} · ${readSummary}`);
+        const codeFooter = formatFooter(codeResp, `${lang} · ${readSummary}`, { tool: 'code_task_files' });
         const suggestionLine = route.suggestion ? `\n${route.suggestion}` : '';
         return { content: [{ type: 'text', text: codeResp.content + codeFooter + suggestionLine }] };
       }
@@ -2446,6 +2462,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           } catch { /* best-effort — don't fail the tool call */ }
         }
+
+        // Per-call usage breakdown (call_log) — savings by tier and tool.
+        try {
+          const usage = await getUsageSummary();
+          if (usage.totalCalls > 0) {
+            lines.push(`### Usage log (${usage.totalCalls} calls · ${usage.totalTokensSaved.toLocaleString()} tokens saved)`);
+            lines.push('');
+            if (usage.byTier.length > 0) {
+              lines.push(`| Tier | Calls | Tokens saved |`);
+              lines.push(`|------|------:|-------------:|`);
+              for (const t of usage.byTier) {
+                lines.push(`| ${t.tier ?? '—'} | ${t.calls} | ${t.tokensSaved.toLocaleString()} |`);
+              }
+              lines.push('');
+            }
+            if (usage.byTool.length > 0) {
+              lines.push(`| Tool | Calls | Tokens saved |`);
+              lines.push(`|------|------:|-------------:|`);
+              for (const t of usage.byTool) {
+                lines.push(`| ${t.tool ?? '—'} | ${t.calls} | ${t.tokensSaved.toLocaleString()} |`);
+              }
+              lines.push('');
+            }
+          }
+        } catch { /* best-effort — telemetry must never break stats */ }
 
         lines.push(`*Stats persist across restarts in \`~/.houtini-lm/model-cache.db\`.*`);
 

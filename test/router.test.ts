@@ -34,6 +34,12 @@ test('embed always local; tier:cli with no cli → local', async () => {
   assert.equal((await new Router({ local: fake('local'), cli: fake('cli') }, cfg).chat(msg(9999), { tool: 'embed' })).content, 'local');
   assert.equal((await new Router({ local: fake('local') }, cfg).chat(msg(9999), { tier: 'cli' })).content, 'local');
 });
+test('chat tags the resolved tier on the result (incl. rule escalation)', async () => {
+  const r = new Router({ local: fake('local'), cli: fake('cli') }, cfg);
+  assert.equal((await r.chat(msg(5), { tier: 'cli' })).tier, 'cli');   // explicit directive
+  assert.equal((await r.chat(msg(50), {})).tier, 'local');             // rules → local
+  assert.equal((await r.chat(msg(100), {})).tier, 'cli');              // rules escalate → cli
+});
 test('listModels merges + tags tier', async () => {
   const models = await new Router({ local: fake('local'), cli: fake('cli') }, cfg).listModels();
   assert.deepEqual(models.map((m) => [m.id, m.tier]).sort(), [['cli-m', 'cli'], ['local-m', 'local']]);

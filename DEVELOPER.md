@@ -171,7 +171,7 @@ only when a real divergence forces one, not speculatively. Three providers
 is where the abstraction proves its worth; two is still close to "a couple
 of if-statements."
 
-## SQLite cache — two tables
+## SQLite cache
 
 Database path: `~/.houtini-lm/model-cache.db`. Uses `sql.js` (pure WASM) to
 avoid native dependencies.
@@ -208,6 +208,23 @@ Derived stats:
 - `avgTokPerSec = totalTokPerSec / perfCalls`
 - `prefillTokPerSec ≈ (totalPromptTokens / calls) / (avgTtftSec)` —
   used by `estimatePrefill()` once `ttftCalls >= 2`
+
+### call_log
+
+`call_log` stores one row per local-model call in the existing `~/.houtini-lm/model-cache.db`, recording the selected model, tier, tool, token counts, latency, throughput, and success status. Because sql.js re-serializes the whole database on every save, the table is capped and oldest-pruned on insert, mirroring `model_prefill_samples`. Set `HOUTINI_LM_TELEMETRY=0` or `false` to disable both recording and the usage breakdown. The `stats` tool surfaces the recorded data as a by-tier and by-tool breakdown.
+
+- `id` — autoincrement row id
+- `ts` — call timestamp
+- `model_id` — model identifier used for the call
+- `tier` — `local`, `cli`, or null
+- `tool` — calling tool (`chat`, `custom_prompt`, `code_task`, or `code_task_files`)
+- `prompt_tokens` — prompt token count
+- `completion_tokens` — completion token count
+- `reasoning_tokens` — reasoning token count
+- `tokens_saved` — prompt plus completion tokens
+- `ttft_ms` — time to first token in milliseconds
+- `tok_per_sec` — generated tokens per second
+- `ok` — success flag
 
 ## Pre-flight token estimation (code_task_files)
 

@@ -54,8 +54,9 @@ export class Router implements InferenceBackend {
     if (!(options.overridden && options.model) && options.tool !== 'embed' && options.tier === 'cli' && !this.cli) {
       process.stderr.write('[houtini-lm][router] tier:"cli" but no CLI configured — using local\n');
     }
-    const backend = this.routeTier(messages, options) === 'cli' ? this.cli! : this.local;
-    return backend.chat(messages, options);
+    const tier = this.routeTier(messages, options);
+    const backend = tier === 'cli' ? this.cli! : this.local;
+    return backend.chat(messages, options).then((r) => ({ ...r, tier }));
   }
   async listModels(): Promise<ModelInfo[]> {
     const local = (await this.local.listModels()).map((m) => ({ ...m, tier: 'local' as const }));

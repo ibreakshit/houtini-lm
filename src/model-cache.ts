@@ -184,7 +184,9 @@ export function getPromptHints(modelId: string, arch?: string): PromptHints {
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const DB_DIR = join(homedir(), '.houtini-lm');
+// Data home. Defaults to ~/.houtini-lm; override with HOUTINI_LM_HOME (used by
+// tests for isolation, and by users who relocate the data dir).
+const DB_DIR = process.env.HOUTINI_LM_HOME || join(homedir(), '.houtini-lm');
 const DB_PATH = join(DB_DIR, 'model-cache.db');
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const HF_TIMEOUT_MS = 8000;
@@ -273,6 +275,27 @@ export async function initDb(): Promise<Database> {
     )
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_prefill_samples_model ON model_prefill_samples(model_id, recorded_at DESC)`);
+
+  // Per-call usage log — one row per local-model call. Opt-out via
+  // HOUTINI_LM_TELEMETRY=0. Bounded (oldest pruned on insert) because sql.js
+  // re-serializes the entire DB on every save.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS call_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      model_id TEXT NOT NULL,
+      tier TEXT,
+      tool TEXT,
+      prompt_tokens INTEGER NOT NULL,
+      completion_tokens INTEGER NOT NULL,
+      reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+      tokens_saved INTEGER NOT NULL,
+      ttft_ms INTEGER,
+      tok_per_sec REAL,
+      ok INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_call_log_ts ON call_log(ts DESC)`);
 
   return db;
 }
@@ -974,6 +997,181 @@ export async function recordPerformance(
     );
   }
   saveDb();
+}
+
+// ── Call log (per-call usage telemetry) ──────────────────────────────
+
+export interface CallLogEntry {
+  modelId: string;
+  tier?: 'local' | 'cli' | null;
+  tool?: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens?: number;
+  ttftMs?: number;
+  tokPerSec?: number;
+  ok?: boolean;
+}
+
+export interface CallLogRow {
+  id: number;
+  ts: number;
+  modelId: string;
+  tier: string | null;
+  tool: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  tokensSaved: number;
+  ttftMs: number | null;
+  tokPerSec: number | null;
+  ok: boolean;
+}
+
+function rowToCallLog(row: Record<string, unknown>): CallLogRow {
+  return {
+    id: row.id as number,
+    ts: row.ts as number,
+    modelId: row.model_id as string,
+    tier: (row.tier as string | null) ?? null,
+    tool: (row.tool as string | null) ?? null,
+    promptTokens: row.prompt_tokens as number,
+    completionTokens: row.completion_tokens as number,
+    reasoningTokens: row.reasoning_tokens as number,
+    tokensSaved: row.tokens_saved as number,
+    ttftMs: (row.ttft_ms as number | null) ?? null,
+    tokPerSec: (row.tok_per_sec as number | null) ?? null,
+    ok: !!(row.ok as number),
+  };
+}
+
+/** Telemetry is on by default; HOUTINI_LM_TELEMETRY=0/false opts out. */
+function telemetryEnabled(): boolean {
+  const v = process.env.HOUTINI_LM_TELEMETRY;
+  return v !== '0' && v !== 'false';
+}
+
+/** Max call-log rows retained; oldest pruned on insert. Default 5000. */
+function callLogMaxRows(): number {
+  const n = parseInt(process.env.HOUTINI_LM_TELEMETRY_MAX ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 5000;
+}
+
+/**
+ * Append one call to the per-call usage log. Caller fire-and-forgets;
+ * failures must not block a tool response. No-op when telemetry is disabled.
+ */
+export async function recordCall(entry: CallLogEntry): Promise<void> {
+  if (!telemetryEnabled() || !entry.modelId) return;
+  const database = await initDb();
+  const tokensSaved = entry.promptTokens + entry.completionTokens;
+  database.run(
+    `INSERT INTO call_log (
+      ts, model_id, tier, tool, prompt_tokens, completion_tokens,
+      reasoning_tokens, tokens_saved, ttft_ms, tok_per_sec, ok
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      Date.now(),
+      entry.modelId,
+      entry.tier ?? null,
+      entry.tool ?? null,
+      entry.promptTokens,
+      entry.completionTokens,
+      entry.reasoningTokens ?? 0,
+      tokensSaved,
+      entry.ttftMs ?? null,
+      entry.tokPerSec ?? null,
+      entry.ok === false ? 0 : 1,
+    ],
+  );
+  // Bounded retention — keep only the newest N rows. sql.js re-serializes the
+  // entire DB on every save, so the log must not grow without bound.
+  database.run(
+    `DELETE FROM call_log WHERE id NOT IN (
+       SELECT id FROM call_log ORDER BY ts DESC, id DESC LIMIT ?
+     )`,
+    [callLogMaxRows()],
+  );
+  saveDb();
+}
+
+/**
+ * Most-recent call-log rows, newest first.
+ */
+export async function getRecentCalls(limit = 50): Promise<CallLogRow[]> {
+  const database = await initDb();
+  const stmt = database.prepare('SELECT * FROM call_log ORDER BY ts DESC, id DESC LIMIT ?');
+  const results: CallLogRow[] = [];
+  try {
+    stmt.bind([limit]);
+    while (stmt.step()) {
+      results.push(rowToCallLog(stmt.getAsObject() as Record<string, unknown>));
+    }
+  } finally {
+    stmt.free();
+  }
+  return results;
+}
+
+export interface UsageSummary {
+  totalCalls: number;
+  totalTokensSaved: number;
+  byTier: { tier: string | null; calls: number; tokensSaved: number }[];
+  byTool: { tool: string | null; calls: number; tokensSaved: number }[];
+  byModel: { modelId: string; calls: number; tokensSaved: number }[];
+}
+
+/**
+ * Aggregate call-log usage: total calls + tokens saved, broken down by tier,
+ * tool, and model. Optionally restricted to calls at/after `sinceMs`.
+ */
+export async function getUsageSummary(sinceMs?: number): Promise<UsageSummary> {
+  const database = await initDb();
+  const filter = sinceMs ? ' WHERE ts >= ?' : '';
+  const params = sinceMs ? [sinceMs] : [];
+
+  const totalsStmt = database.prepare(
+    `SELECT COUNT(*) AS calls, COALESCE(SUM(tokens_saved), 0) AS saved FROM call_log${filter}`,
+  );
+  let totalCalls = 0;
+  let totalTokensSaved = 0;
+  try {
+    totalsStmt.bind(params);
+    if (totalsStmt.step()) {
+      const row = totalsStmt.getAsObject() as Record<string, unknown>;
+      totalCalls = (row.calls as number) || 0;
+      totalTokensSaved = (row.saved as number) || 0;
+    }
+  } finally {
+    totalsStmt.free();
+  }
+
+  // col is an internal constant ('tier' | 'tool' | 'model_id'), never user input.
+  const groupBy = (col: string): { key: unknown; calls: number; saved: number }[] => {
+    const stmt = database.prepare(
+      `SELECT ${col} AS k, COUNT(*) AS calls, COALESCE(SUM(tokens_saved), 0) AS saved
+       FROM call_log${filter} GROUP BY ${col} ORDER BY saved DESC`,
+    );
+    const out: { key: unknown; calls: number; saved: number }[] = [];
+    try {
+      stmt.bind(params);
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as Record<string, unknown>;
+        out.push({ key: row.k, calls: row.calls as number, saved: row.saved as number });
+      }
+    } finally {
+      stmt.free();
+    }
+    return out;
+  };
+
+  return {
+    totalCalls,
+    totalTokensSaved,
+    byTier: groupBy('tier').map((r) => ({ tier: (r.key as string | null) ?? null, calls: r.calls, tokensSaved: r.saved })),
+    byTool: groupBy('tool').map((r) => ({ tool: (r.key as string | null) ?? null, calls: r.calls, tokensSaved: r.saved })),
+    byModel: groupBy('model_id').map((r) => ({ modelId: r.key as string, calls: r.calls, tokensSaved: r.saved })),
+  };
 }
 
 // ── Prefill sample collection (linear-fit estimator) ─────────────────

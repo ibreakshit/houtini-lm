@@ -13,6 +13,8 @@ export interface StreamingResult {
   /** Reasoning content streamed via OpenAI vendor extension delta.reasoning_content */
   reasoningContent?: string;
   model: string;
+  /** Resolved routing tier that handled this call (router mode only). */
+  tier?: Tier;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
