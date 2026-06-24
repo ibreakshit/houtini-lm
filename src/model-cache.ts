@@ -1045,10 +1045,15 @@ function rowToCallLog(row: Record<string, unknown>): CallLogRow {
   };
 }
 
-/** Telemetry is on by default; HOUTINI_LM_TELEMETRY=0/false opts out. */
+/**
+ * Telemetry is on by default. HOUTINI_LM_TELEMETRY is off/none/0/false to
+ * disable; any other value (calls, full, 1, true, on, ...) enables call_log.
+ * (The `calls` vs `full` distinction is a client-side concern; the server
+ * only cares whether to log calls at all.)
+ */
 function telemetryEnabled(): boolean {
-  const v = process.env.HOUTINI_LM_TELEMETRY;
-  return v !== '0' && v !== 'false';
+  const v = (process.env.HOUTINI_LM_TELEMETRY ?? '').trim().toLowerCase();
+  return v !== '0' && v !== 'false' && v !== 'off' && v !== 'none';
 }
 
 /** Max call-log rows retained; oldest pruned on insert. Default 5000. */

@@ -450,7 +450,7 @@ On **remote** providers (OpenRouter, DeepSeek, Groq, Cerebras, and anything dete
 | `HOUTINI_LM_MODEL` | *(auto-detect)* | Model identifier — leave blank to use whatever's loaded. Legacy alias: `LM_STUDIO_MODEL`. |
 | `HOUTINI_LM_PROVIDER` | *(auto-detect)* | Force provider-specific handling. Set to `openrouter` for OpenRouter attribution headers, `reasoning.exclude`, and no inference serialisation. Otherwise auto-detected from the endpoint URL. |
 | `HOUTINI_LM_CONTEXT_WINDOW` | `100000` | Fallback context window if the API doesn't report it. Legacy alias: `LM_CONTEXT_WINDOW`. |
-| `HOUTINI_LM_TELEMETRY` | `1` | Enables per-call usage logging and the `stats` usage breakdown. Set to `0` or `false` to disable both. |
+| `HOUTINI_LM_TELEMETRY` | `on` | Per-call usage logging + the `stats` usage breakdown. Disable with `off`/`none`/`0`/`false`; any other value enables it. |
 | `HOUTINI_LM_TELEMETRY_MAX` | `5000` | Maximum rows kept in `call_log`; oldest rows are pruned on insert. |
 | `HOUTINI_LM_HOME` | `~/.houtini-lm` | Override the data directory where `model-cache.db` lives. |
 

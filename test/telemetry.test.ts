@@ -96,3 +96,13 @@ test('recordCall is a no-op when HOUTINI_LM_TELEMETRY=0', async () => {
   }
   assert.equal((await getRecentCalls(10)).length, 0);
 });
+
+test('recordCall is a no-op when HOUTINI_LM_TELEMETRY=off', async () => {
+  process.env.HOUTINI_LM_TELEMETRY = 'off';
+  try {
+    await recordCall({ modelId: 'x', promptTokens: 7, completionTokens: 7 });
+  } finally {
+    process.env.HOUTINI_LM_TELEMETRY = '1';
+  }
+  assert.equal((await getRecentCalls(10)).length, 0);
+});
